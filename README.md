@@ -1,28 +1,368 @@
-# REPO NAME 
+# Config-driven Terraform deployment of Lakeflow Connect connectors
+
+This project is intended to deploy and scale out database connectors to the Databricks Lakehouse platform using infrastructure-as-code principles.
+It is intended to be a database-agnostic, YAML-driven Terraform deployment for Databricks Lakeflow Connect that provides built-in validation and orchestration for deployments.
+
+## Key Features:
+- **Database-agnostic**: Supports various Lakeflow Connect-supported databases by simply changing the `source_type` in the config.
+    - Currently supports the following:
+        - SQL Server CDC ([Public docs](https://docs.databricks.com/en/connect/unity-catalog/sql-server.html))
+        - PostgreSQL CDC ([Public docs](https://docs.databricks.com/en/connect/unity-catalog/postgresql.html))
+- **YAML-driven configuration**: Define connections, databases, schemas, tables, and schedules in a single configuration file
+- **Flexible Unity Catalog mapping**: Configure where data lands with per-database catalog and schema customization
+- **Flexible ingestion modes**: Choose between full schema ingestion or specific table selection per database
+- **Automated orchestration**: Configurable job scheduling of the managed ingestion pipelines with support for multiple sync frequencies
+- **Infrastructure-as-Code**: Fully automated deployment of gateway pipelines, ingestion pipelines, and orchestration jobs
+
+**What gets deployed:**
+- Lakeflow Connect gateway pipeline, using an existing Unity Catalog connection
+- Ingestion pipelines for each database/schema combination, all routed through a single shared gateway
+- Databricks jobs to orchestrate the ingestion workflows
+- Optional: Event log tables for pipeline monitoring
+
+## Overview
+
+This project allows you to deploy components in the architecture described below.
+
+![Lakeflow Connect Architecture Overview](docs/assets/images/lakeflow_connect_architecture.png)
+
+
+## Project Layout
 
 ```
-Placeholder
-
-Fill here a description at a functional level - what is this content doing
+lakeflow-connect-terraform/
+├── config/                      # YAML configuration files
+│   ├── lakeflow_dev.yml        # Active configuration
+│   └── examples/                # Example configurations
+│       ├── postgresql.yml       # PostgreSQL example
+│       ├── sqlserver.yml        # SQL Server example
+│       └── README.md            # Examples documentation
+├── infra/                       # Terraform root module
+│   ├── backend.tf
+│   ├── main.tf
+│   ├── locals.tf
+│   ├── outputs.tf
+│   ├── provider.tf
+│   ├── variables.tf
+│   └── modules/
+│       ├── gateway_pipeline/
+│       ├── ingestion_pipeline/
+│       ├── job/
+│       ├── gateway_validation/
+│       └── validate_catalog_and_schemas/
+├── tools/                       # Validation scripts (optional)
+│   ├── yaml_content_validator.py
+│   └── validate_running_gateway.py
+├── pyproject.toml              # Python dependencies for validation tools
+└── README.md
 ```
 
-## Video Overview
+## Pre-requisites
 
-Include a GIF overview of what your project does. Use a service like Quicktime, Zoom or Loom to create the video, then convert to a GIF.
+### Software Requirements
+- **Terraform** >= 1.10
+- **Databricks Terraform Provider** >= 1.104.0 (for PostgreSQL source_configurations support)
+- **Databricks workspace** with Unity Catalog enabled
+- **Python 3.10+** and **Poetry** (optional, for YAML validation tools)
 
+### Databricks Setup
+
+#### 1. Create Unity Catalog Connection
+Create a Databricks Unity Catalog connection to your source database and specify it in your YAML config under `connection.name`.
+
+Refer to Databricks documentation for your database type:
+- [SQL Server Connection Setup](https://docs.databricks.com/en/connect/unity-catalog/sql-server.html)
+- [PostgreSQL Connection Setup](https://docs.databricks.com/en/connect/unity-catalog/postgresql.html)
+
+#### 2. Create Unity Catalog Structure
+Based on your YAML configuration in the `unity_catalog` section, pre-create:
+
+- **Catalogs**: Create catalog(s) specified in `global_uc_catalog` and `staging_uc_catalog` (if different)
+- **Staging Schema**: Create the schema specified in `staging_schema` within the staging catalog
+- **Ingestion Schemas**: Create schemas for ingestion pipelines in their target catalogs
+  - Schema names will be: `{schema_prefix}{source_schema_name}{schema_suffix}`
+  - Example: If source schema is `dbo` with prefix `dev_` → create schema `dev_dbo`
+  - If no prefix/suffix specified, use the source schema name as-is
+
+#### 3. Configure Source Database (Database-Specific)
+
+**For PostgreSQL Sources:**
+Pre-create replication slots and publications in the source database as specified in the YAML config:
+
+```sql
+-- Example for PostgreSQL
+CREATE PUBLICATION dbx_pub_mydb FOR ALL TABLES;
+SELECT pg_create_logical_replication_slot('dbx_slot_mydb', 'pgoutput');
+```
+
+Refer to [PostgreSQL Replication Setup](https://docs.databricks.com/en/connect/unity-catalog/postgresql.html) for detailed instructions.
+
+**For SQL Server Sources:**
+Ensure CDC is enabled on the source database and tables. Refer to [SQL Server CDC Setup](https://docs.databricks.com/en/connect/unity-catalog/sql-server.html).
+
+#### 4. Grant Permissions
+Provide the user/SPN used for Terraform deployment with:
+
+- `USE CONNECTION` on the Unity Catalog connection to the source database
+- `USE CATALOG` on all catalogs specified in your YAML config
+- `USE SCHEMA` and `CREATE TABLE` on all ingestion pipeline target schemas
+- `USE SCHEMA`, `CREATE TABLE` and `CREATE VOLUME` on the staging schema
+  - Note: `CREATE TABLE` allows creation of event log tables if enabled
+- Access to cluster policy for spinning up gateway pipeline compute ([Policy Documentation](https://learn.microsoft.com/en-gb/azure/databricks/admin/clusters/policy-definition#define-limits-on-lakeflow-declarative-pipelines-compute))
+  - Specify the policy name in your YAML config under `gateway_pipeline_cluster_policy_name`
+
+### Assumptions
+1. **Unity Catalog Resources**: All Unity Catalog catalogs and schemas specified in the YAML configuration must already exist. This project validates their existence but does not create them.
+2. **Database Permissions**: The database replication user used with the Unity Catalog connection must have all necessary permissions on the source database.
+3. **Source Database Configuration**: For PostgreSQL, replication slots and publications must be pre-created. For SQL Server, CDC must be enabled.
 
 ## Installation
 
-Include details on how to use and install this content. 
+### Step 1: Clone and Configure
+
+```bash
+# Clone the repository
+git clone <your-repo-url>
+cd lakeflow-connect-terraform
+
+# Copy an example configuration and customize for your environment
+# For PostgreSQL:
+cp config/examples/postgresql.yml config/lakeflow_<your_env>.yml
+
+# For SQL Server:
+cp config/examples/sqlserver.yml config/lakeflow_<your_env>.yml
+
+# Edit the YAML file with your environment details
+```
+
+### Step 2: (Optional) Set Up Python Validation Tools
+
+The Python tools provide YAML validation **before** Terraform deployment. **Note**: Terraform itself does not require Poetry - it reads YAML directly using the built-in `yamldecode()` function.
+
+```bash
+# Install Poetry (if not already installed)
+pip install poetry
+
+# Install project dependencies
+poetry install
+
+# Validate your configuration before deploying
+poetry run python tools/yaml_content_validator.py config/lakeflow_<your_env>.yml
+```
+
+After validation passes, proceed with Terraform deployment (no Poetry needed).
+
+### Step 3: Configure Authentication
+
+Set up authentication for Databricks workspace Terraform provider:
+
+**Option A: Personal Login (Development)**
+```bash
+# For Azure
+az login
+export DATABRICKS_HOST="https://adb-xxxxx.azuredatabricks.net"
+export DATABRICKS_AUTH_TYPE="azure-cli"
+```
+
+**Option B: Service Principal (Production)**
+```bash
+# Create profile in ~/.databrickscfg
+cat >> ~/.databrickscfg << EOF
+[production]
+host                = https://adb-<workspace_id>.<num>.azuredatabricks.net/
+azure_tenant_id     = <tenant_id>
+azure_client_id     = <client_id>
+azure_client_secret = <client_secret>
+auth_type           = azure-client-secret
+EOF
+
+# Set environment variable
+export DATABRICKS_CONFIG_PROFILE=production
+```
+
+### Step 4: Configure Terraform Backend
+
+**Option A: Local Backend (Default - For Single User)**
+
+The project is configured with local backend by default. State is stored at `infra/terraform.tfstate`.
+
+```bash
+cd infra
+terraform init
+terraform validate
+```
+
+**Option B: Remote Backend (Recommended for Teams)**
+
+For team collaboration, use a remote backend like Azure Storage. Update `infra/backend.tf`:
+
+```hcl
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "terraform-state-rg"
+    storage_account_name = "tfstatelakeflow"
+    container_name       = "tfstate"
+    key                  = "lakeflow-connect.tfstate"
+  }
+}
+```
+
+Then initialize with the backend configuration:
+```bash
+cd infra
+
+# Set Azure credentials
+export ARM_SUBSCRIPTION_ID="<subscription_id>"
+export ARM_TENANT_ID="<tenant_id>"
+export ARM_CLIENT_ID="<client_id>"
+export ARM_CLIENT_SECRET="<client_secret>"
+
+# Initialize with remote backend
+terraform init -reconfigure
+terraform validate
+```
+
+**Other Remote Backend Options:**
+- **AWS S3**: For multi-cloud or AWS environments
+- **Terraform Cloud**: Managed service with built-in state management
+- **Google Cloud Storage**: For GCP environments
+
+See [Terraform Backend Documentation](https://developer.hashicorp.com/terraform/language/settings/backends) for more options.
+
+### Step 5: Deploy Infrastructure
+
+```bash
+# Plan deployment (review changes)
+terraform plan --var yaml_config_path=../config/lakeflow_<env>.yml
+
+# Apply deployment
+terraform apply --var yaml_config_path=../config/lakeflow_<env>.yml
+```
+
+## YAML Configuration
+
+See `config/examples/` for complete example configurations ([PostgreSQL](config/examples/postgresql.yml), [SQL Server](config/examples/sqlserver.yml)). The configuration is fully YAML-driven with the following main sections:
+
+### Unity Catalog Configuration
+```yaml
+unity_catalog:
+  global_uc_catalog: "my_catalog"      # Required: Default catalog for ingestion pipelines
+  staging_uc_catalog: "staging_cat"    # Optional: Catalog for gateway staging (defaults to global)
+  staging_schema: "lf_staging"         # Optional: Schema for gateway staging (defaults to {app_name}_lf_staging)
+```
+
+- `global_uc_catalog`: Default catalog where ingestion pipeline tables land (required)
+- `staging_uc_catalog`: Catalog for gateway pipeline staging assets (optional, defaults to `global_uc_catalog`)
+- `staging_schema`: Schema name for gateway staging assets (optional, defaults to `{app_name}_lf_staging`)
+
+### Connection
+```yaml
+connection:
+  name: "my_uc_connection"
+  source_type: "POSTGRESQL"  # POSTGRESQL, SQLSERVER, MYSQL, ORACLE
+```
+
+### Databases
+```yaml
+databases:
+  - name: my_database
+    # Optional: Override global catalog for this database
+    uc_catalog: "custom_catalog"
+    
+    # Optional: Customize schema names
+    schema_prefix: "dev_"      # Results in: dev_<schema_name>
+    schema_suffix: "_raw"      # Results in: <schema_name>_raw
+    
+    # PostgreSQL only: Replication configuration
+    replication_slot: "dbx_slot_mydb"
+    publication: "dbx_pub_mydb"
+    
+    schemas:
+      - name: public
+        use_schema_ingestion: true  # Ingest all tables
+      - name: app_schema
+        use_schema_ingestion: false  # Ingest specific tables only
+        tables:
+          - source_table: users
+          - source_table: orders
+```
+
+- Per-database `uc_catalog`: Override global catalog for specific database (optional)
+- Per-database `schema_prefix` and `schema_suffix`: Customize destination schema names (optional)
+- Per-database `replication_slot` and `publication`: PostgreSQL replication configuration (PostgreSQL only)
+- Schemas and tables to ingest with granular control
+
+### Event Logs
+```yaml
+event_log:
+  to_table: true  # Enable/disable materialization of event logs to Delta tables
+```
+
+### Job Orchestration
+```yaml
+job:
+  common_job_for_all_pipelines: false
+  common_schedule:
+    quartz_cron_expression: "0 */30 * * * ?"
+    timezone_id: "UTC"
+  
+  # Per-database schedules (when common_job_for_all_pipelines is false)
+  per_database_schedules:
+    - name: "frequent_sync"
+      applies_to: ["db1", "db2"]
+      schedule:
+        quartz_cron_expression: "0 */15 * * * ?"
+        timezone_id: "UTC"
+```
+
+Supports two scheduling modes:
+1. **Common job for all pipelines** (`common_job_for_all_pipelines: true`): Single job runs all database ingestion pipelines on the same schedule
+2. **Per-database scheduling** (`common_job_for_all_pipelines: false`): Separate jobs per schedule group, allowing different databases to sync at different frequencies
+
+## How does it compare to other deployment options?
+
+| Feature | This Project (Terraform) | Databricks CLI | DABS | REST API | UI |
+|---------|-------------------------|----------------|------|----------|-----|
+| **Infrastructure-as-Code** | ✅ Native | ⚠️ Limited | ✅ Yes | ❌ No | ❌ No |
+| **Version Control** | ✅ Git-native | ⚠️ Manual | ✅ Git-native | ❌ Manual | ❌ Manual |
+| **Multi-environment** | ✅ Built-in | ⚠️ Manual | ✅ Built-in | ⚠️ Manual | ❌ Manual |
+| **State Management** | ✅ Native | ❌ None | ⚠️ Limited | ❌ None | ❌ None |
+| **YAML-driven** | ✅ Yes | ❌ No | ✅ Yes | ❌ No | ❌ No |
+| **Validation** | ✅ Pre-deploy | ❌ No | ⚠️ Limited | ❌ No | ⚠️ Post-deploy |
+| **Team Collaboration** | ✅ Excellent | ⚠️ Manual | ✅ Good | ❌ Poor | ❌ Poor |
+| **Learning Curve** | ⚠️ Moderate | ✅ Easy | ⚠️ Moderate | ⚠️ Complex | ✅ Easy |
+| **Automation-friendly** | ✅ Excellent | ✅ Good | ✅ Good | ✅ Excellent | ❌ Poor |
+
+**When to use Terraform (this project):**
+- Managing multiple environments (dev, staging, prod)
+- Team collaboration with state management
+- Complex configurations with many pipelines
+- CI/CD automation requirements
+- Need for validation before deployment
+
+**When to use alternatives:**
+- **UI**: Quick one-off deployments, learning/exploration
+- **CLI**: Simple scripts, single-pipeline deployments
+- **DABS**: Databricks-native workflows with asset bundles
+- **API**: Custom integrations, programmatic control
 
 ## How to get help
 
 Databricks support doesn't cover this content. For questions or bugs, please open a GitHub issue and the team will help on a best effort basis.
 
+## Future Enhancements
+
+- Pre-commit hooks for YAML validation
+- Pydantic-based schema validation
+- Automated CI/CD pipeline examples
+- Metadata export for downstream applications
+- Cost estimation based on configuration
+- Multi-region deployment support
 
 ## License
 
-&copy; 2025 Databricks, Inc. All rights reserved. The source in this notebook is provided subject to the Databricks License [https://databricks.com/db-license-source].  All included or referenced third party libraries are subject to the licenses set forth below.
+© 2025 Databricks, Inc. All rights reserved. The source in this notebook is provided subject to the [Databricks License](https://databricks.com/db-license-source). All included or referenced third party libraries are subject to the licenses set forth below.
 
 | library                                | description             | license    | source                                              |
 |----------------------------------------|-------------------------|------------|-----------------------------------------------------|
+| terraform-provider-databricks          | Databricks provider     | Apache 2.0 | https://github.com/databricks/terraform-provider-databricks |

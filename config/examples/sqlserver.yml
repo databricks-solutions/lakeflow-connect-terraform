@@ -1,0 +1,138 @@
+# Application name and Databricks environment name
+env: "dev"
+app_name: "retail_ops"
+
+# Unity Catalog configuration
+# global_uc_catalog: Default UC catalog where ingestion pipeline tables will land
+# staging_uc_catalog: UC catalog for gateway pipeline staging assets (defaults to global_uc_catalog if not provided)
+# staging_schema: Schema name for gateway pipeline staging assets (defaults to {app_name}_lf_staging if not provided)
+unity_catalog:
+  global_uc_catalog: "lf_connect_demo_catalog"
+  staging_uc_catalog: "lf_connect_common_staging"  # Optional: if not provided, defaults to global_uc_catalog
+  staging_schema: "gateway_assets"  # Optional: if not provided, defaults to {app_name}_lf_staging
+
+# Provider the name of the Unity catalog connection for the SQL Server
+connection:
+  name: "sql_retail_ops_connection"
+  source_type: "SQLSERVER"
+
+# The cluster policy used with the deployment of the gateway pipeline
+gateway_pipeline_cluster_policy_name: job_compute_for_spn_for_lf_connect
+
+# List of databases within the SQL Server to ingest from
+# The 'use_schema_ingestion' flag determines whether all tables in the schema are ingested automatically (true) 
+# or only the explicitly listed tables are ingested (false). Setting it to 'true' will ignore the 'tables' list.
+databases:
+  - name: retail_ops_db_one
+    # Optional: Override global_uc_catalog for this specific database
+    uc_catalog: "lf_connect_retail_ops"  # If not provided, uses global_uc_catalog
+    
+    # Optional: Add prefix/suffix to schema names for this database. In UC, it will be visible as {schema_prefix}{<the schema name>}{schema_suffix}
+    # schema_prefix: "retail_ops_db_one_"
+    # schema_suffix: "_v2"
+    
+    schemas:
+      - name: dbo
+        use_schema_ingestion: false
+        tables:
+          - source_table: vendors
+          - source_table: products
+          - source_table: product_vendors
+      - name: inventory
+        use_schema_ingestion: false
+        tables:
+          - source_table: warehouses
+          - source_table: stock_items
+          - source_table: stock_movements
+
+  # - name: retail_ops_db_two
+  #   # Optional: Override global_uc_catalog for this specific database
+  #   # uc_catalog: "custom_catalog_name"  # If not provided, uses global_uc_catalog
+  #   
+  #   # Optional: Add prefix/suffix to schema names for this database. In UC, it will be visible as {schema_prefix}{<the schema name>}{schema_suffix}
+  #   # schema_prefix: "retail_ops_db_two_"
+  #   # schema_suffix: "_raw"
+  #   
+  #   schemas:
+  #     - name: dbo
+  #       use_schema_ingestion: false
+  #       tables:
+  #         - source_table: vendors
+  #         - source_table: products
+  #         - source_table: product_vendors
+  #    - name: inventory
+  #       use_schema_ingestion: false
+  #       tables:
+  #         - source_table: warehouses
+  #         - source_table: stock_items
+  #         - source_table: stock_movements
+  # - name: retail_ops_db_three
+  #   # Optional: Override global_uc_catalog for this specific database
+  #   # uc_catalog: "custom_catalog_name"  # If not provided, uses global_uc_catalog
+  #   
+  #   # Optional: Add prefix/suffix to schema names for this database. In UC, it will be visible as {schema_prefix}{<the schema name>}{schema_suffix}
+  #   # schema_prefix: "retail_ops_db_three_"
+  #   # schema_suffix: "_raw"
+  #   
+  #   schemas:
+  #     - name: dbo
+  #       use_schema_ingestion: false
+  #       tables:
+  #         - source_table: vendors
+  #         - source_table: products
+  #         - source_table: product_vendors
+  #    - name: inventory
+  #       use_schema_ingestion: false
+  #       tables:
+  #         - source_table: warehouses
+  #         - source_table: stock_items
+  #         - source_table: stock_movements
+
+# Create one gateway pipeline for the entire application
+gateway_pipeline_cluster_config:
+  label: "default"
+  node_type_id: "Standard_E4d_v4"
+  autoscale:
+    min_workers: 0
+    max_workers: 0
+    mode: ENHANCED
+  apply_policy_default_values: false
+  enable_local_disk_encryption: false
+  custom_tags: {}
+  spark_conf: {}
+  spark_env_vars: {}
+  ssh_public_keys: []
+
+# Gateway validation configuration : This configuration is used by a script to validate that the gateway pipeline is running before the job resource is created/updated.
+gateway_validation:
+  timeout_minutes: 30
+  check_interval_seconds: 15
+
+# Event log configuration : Control whether pipeline event logs are materialized to Delta tables
+# When enabled, event logs are written to Delta tables in the respective schemas:
+#   - Gateway pipeline: logs to the staging schema (<app>_lf_staging)
+#   - Ingestion pipelines: logs to their respective landing schemas (<app>_lf_<database>)
+event_log:
+  to_table: true  # Set to false to disable event log table creation
+
+# Create orchestration using Lakeflow Jobs to run ingestion pipelines
+job:
+  common_job_for_all_pipelines: false
+  common_schedule:
+    quartz_cron_expression: "0 */30 * * * ?"  # This schedule applies if 'common_job_for_all_pipelines' is 'true'
+    timezone_id: "UTC"
+  
+  # Per-database schedules apply when common_job_for_all_pipelines is false
+  # Each schedule group can apply to one or more databases
+  # Multiple databases can share the same schedule by listing them in 'applies_to'
+  per_database_schedules:
+    - name: "frequent_sync"
+      applies_to: []
+      schedule:
+        quartz_cron_expression: "0 */15 * * * ?"  # Run every 15 minutes
+        timezone_id: "UTC"
+    - name: "hourly_sync"
+      applies_to: ["retail_ops_db_one"]
+      schedule:
+        quartz_cron_expression: "0 0 * * * ?"  # Run every hour
+        timezone_id: "UTC"
