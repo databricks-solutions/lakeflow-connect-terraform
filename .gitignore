@@ -1,5 +1,71 @@
+# ============================================
+# General
+# ============================================
 *conf*.json
 .DS_Store
-__pycache__
 .idea/
 .env
+
+# ============================================
+# Python / Poetry
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# ============================================
+# YAML Configurations
+# ============================================
+# Ignore all environment-specific configs
+config/lakeflow_*.yml
+# Keep the dev config and examples (no secrets, safe to commit)
+!config/lakeflow_dev.yml
+!config/examples/
+
+# ============================================
+# Terraform
+# ============================================
+# Local .terraform directories
+**/.terraform/*
+
+# State files (CRITICAL: never commit these)
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLI configuration files
+.terraformrc
+terraform.rc
+
+# Variable files (may contain secrets)
+*.tfvars
+*.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Plan output files
+*.tfplan
+
+# Backup files
+*.backup
+
+# ============================================
+# Databricks
+# ============================================
+.databricks/
