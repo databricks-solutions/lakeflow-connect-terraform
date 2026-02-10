@@ -2,6 +2,11 @@
 env: "dev"
 app_name: "wealth_mgmt"
 
+# Provider the name of the Unity catalog connection
+connection:
+  name: "pgsql_aurora_amenon_connection_v1"
+  source_type: "POSTGRESQL"
+
 # Unity Catalog configuration
 # global_uc_catalog: Default UC catalog where ingestion pipeline tables will land
 # staging_uc_catalog: UC catalog for gateway pipeline staging assets (defaults to global_uc_catalog if not provided)
@@ -11,15 +16,10 @@ unity_catalog:
   staging_uc_catalog: "lf_connect_common_staging"  # Optional: if not provided, defaults to global_uc_catalog
   staging_schema: "gateway_assets"  # Optional: if not provided, defaults to {app_name}_lf_staging
 
-# Provider the name of the Unity catalog connection for the SQL Server
-connection:
-  name: "pgsql_aurora_amenon_connection_v1"
-  source_type: "POSTGRESQL"
-
 # The cluster policy used with the deployment of the gateway pipeline
 gateway_pipeline_cluster_policy_name: job_compute_for_spn_for_lf_connect
 
-# List of databases within the SQL Server to ingest from
+# List of databases within the PostgreSQL to ingest from
 # The 'use_schema_ingestion' flag determines whether all tables in the schema are ingested automatically (true) 
 # or only the explicitly listed tables are ingested (false). Setting it to 'true' will ignore the 'tables' list.
 databases:

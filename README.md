@@ -3,9 +3,15 @@
 This project is intended to deploy and scale out database connectors to the Databricks Lakehouse platform using infrastructure-as-code principles.
 It is intended to be a database-agnostic, YAML-driven Terraform deployment for Databricks Lakeflow Connect that provides built-in validation and orchestration for deployments.
 
+## Quick Visual Tour
+
+![Quick Visual Tour Animation](docs/assets/images/lakeflow-connect-terraform.gif)
+
+
+
 ## Key Features:
 - **Database-agnostic**: Supports various Lakeflow Connect-supported databases by simply changing the `source_type` in the config.
-    - Currently supports the following:
+    - Currently tested and verified connectors are:
         - SQL Server CDC ([Public docs](https://docs.databricks.com/en/connect/unity-catalog/sql-server.html))
         - PostgreSQL CDC ([Public docs](https://docs.databricks.com/en/connect/unity-catalog/postgresql.html))
 - **YAML-driven configuration**: Define connections, databases, schemas, tables, and schedules in a single configuration file
@@ -22,7 +28,13 @@ It is intended to be a database-agnostic, YAML-driven Terraform deployment for D
 
 ## Overview
 
-This project allows you to deploy components in the architecture described below.
+This project deploys a subset of the architecture shown below, focusing on infrastructure needed to run Lakeflow Connect data ingestion. Specifically, this project will deploy:
+
+- The Lakeflow Connect Gateway pipeline, using a pre-existing Unity Catalog connection (**Note:** The connection itself is not created or managed by this project)
+- Managed Ingestion pipelines for each configured database/schema/table combination, as defined in your YAML configuration
+- Databricks Jobs to orchestrate and schedule the ingestion pipeline workflows
+- (Optional) Event log tables used for pipeline monitoring and audit (created if configured in your YAML)
+
 
 ![Lakeflow Connect Architecture Overview](docs/assets/images/lakeflow_connect_architecture.png)
 
@@ -51,7 +63,7 @@ lakeflow-connect-terraform/
 │       ├── gateway_validation/
 │       └── validate_catalog_and_schemas/
 ├── tools/                       # Validation scripts (optional)
-│   ├── yaml_content_validator.py
+│   ├── pydantic_validator.py    # Type-safe YAML validation (recommended)
 │   └── validate_running_gateway.py
 ├── pyproject.toml              # Python dependencies for validation tools
 └── README.md
@@ -71,8 +83,8 @@ lakeflow-connect-terraform/
 Create a Databricks Unity Catalog connection to your source database and specify it in your YAML config under `connection.name`.
 
 Refer to Databricks documentation for your database type:
-- [SQL Server Connection Setup](https://docs.databricks.com/en/connect/unity-catalog/sql-server.html)
-- [PostgreSQL Connection Setup](https://docs.databricks.com/en/connect/unity-catalog/postgresql.html)
+- [SQL Server Connection Setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-overview)
+- [PostgreSQL Connection Setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql-source-setup)
 
 #### 2. Create Unity Catalog Structure
 Based on your YAML configuration in the `unity_catalog` section, pre-create:
@@ -87,18 +99,12 @@ Based on your YAML configuration in the `unity_catalog` section, pre-create:
 #### 3. Configure Source Database (Database-Specific)
 
 **For PostgreSQL Sources:**
-Pre-create replication slots and publications in the source database as specified in the YAML config:
+Pre-create replication slots and publications in the source database and specify in the YAML config ( see `config/examples/postgresql.yml`)
 
-```sql
--- Example for PostgreSQL
-CREATE PUBLICATION dbx_pub_mydb FOR ALL TABLES;
-SELECT pg_create_logical_replication_slot('dbx_slot_mydb', 'pgoutput');
-```
-
-Refer to [PostgreSQL Replication Setup](https://docs.databricks.com/en/connect/unity-catalog/postgresql.html) for detailed instructions.
+Refer to [PostgreSQL Replication Setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql-source-setup) for detailed instructions.
 
 **For SQL Server Sources:**
-Ensure CDC is enabled on the source database and tables. Refer to [SQL Server CDC Setup](https://docs.databricks.com/en/connect/unity-catalog/sql-server.html).
+Ensure CDC is enabled on the source database and tables. Refer to [SQL Server CDC Setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-pipeline).
 
 #### 4. Grant Permissions
 Provide the user/SPN used for Terraform deployment with:
@@ -108,7 +114,7 @@ Provide the user/SPN used for Terraform deployment with:
 - `USE SCHEMA` and `CREATE TABLE` on all ingestion pipeline target schemas
 - `USE SCHEMA`, `CREATE TABLE` and `CREATE VOLUME` on the staging schema
   - Note: `CREATE TABLE` allows creation of event log tables if enabled
-- Access to cluster policy for spinning up gateway pipeline compute ([Policy Documentation](https://learn.microsoft.com/en-gb/azure/databricks/admin/clusters/policy-definition#define-limits-on-lakeflow-declarative-pipelines-compute))
+- Access to cluster policy for spinning up gateway pipeline compute ([Policy Documentation](https://docs.databricks.com/aws/en/admin/clusters/policy-definition))
   - Specify the policy name in your YAML config under `gateway_pipeline_cluster_policy_name`
 
 ### Assumptions
@@ -137,18 +143,27 @@ cp config/examples/sqlserver.yml config/lakeflow_<your_env>.yml
 
 ### Step 2: (Optional) Set Up Python Validation Tools
 
-The Python tools provide YAML validation **before** Terraform deployment. **Note**: Terraform itself does not require Poetry - it reads YAML directly using the built-in `yamldecode()` function.
+The Python tools provide **type-safe YAML validation** using Pydantic **before** Terraform deployment. This catches configuration errors early with detailed error messages. **Note**: Terraform itself does not require Poetry. It reads YAML directly using the built-in `yamldecode()` function.
 
 ```bash
 # Install Poetry (if not already installed)
 pip install poetry
 
-# Install project dependencies
+# Install project dependencies (includes Pydantic, croniter, etc.)
 poetry install
 
 # Validate your configuration before deploying
-poetry run python tools/yaml_content_validator.py config/lakeflow_<your_env>.yml
+poetry run python tools/pydantic_validator.py config/lakeflow_<your_env>.yml
 ```
+
+**What gets validated:**
+- ✅ **Type safety**: Boolean values must be `true/false`, not strings
+- ✅ **Source-specific config**: PostgreSQL requires `replication_slot` and `publication`
+- ✅ **Cross-references**: Database names in schedules must exist
+- ✅ **Unity Catalog logic**: Validates catalog configuration rules
+- ✅ **Cron expressions**: Validates Quartz cron syntax
+- ✅ **Schema naming**: Validates prefix/suffix contain valid characters
+- ✅ **Table requirements**: Ensures tables are specified when needed
 
 After validation passes, proceed with Terraform deployment (no Poetry needed).
 
@@ -164,7 +179,7 @@ export DATABRICKS_HOST="https://adb-xxxxx.azuredatabricks.net"
 export DATABRICKS_AUTH_TYPE="azure-cli"
 ```
 
-**Option B: Service Principal (Production)**
+**Option B: Service Principal**
 ```bash
 # Create profile in ~/.databrickscfg
 cat >> ~/.databrickscfg << EOF
@@ -222,26 +237,32 @@ terraform init -reconfigure
 terraform validate
 ```
 
-**Other Remote Backend Options:**
-- **AWS S3**: For multi-cloud or AWS environments
-- **Terraform Cloud**: Managed service with built-in state management
-- **Google Cloud Storage**: For GCP environments
-
-See [Terraform Backend Documentation](https://developer.hashicorp.com/terraform/language/settings/backends) for more options.
+Other Remote Backend Options can be used. See [Terraform Backend Documentation](https://developer.hashicorp.com/terraform/language/settings/backends) for more options.
 
 ### Step 5: Deploy Infrastructure
 
+Run Terraform via `poetry run` so that the gateway validation step (which runs a Python script using the Databricks SDK) has access to the project's Python dependencies.
+
 ```bash
 # Plan deployment (review changes)
-terraform plan --var yaml_config_path=../config/lakeflow_<env>.yml
+poetry run terraform plan --var yaml_config_path=../config/lakeflow_<env>.yml
 
 # Apply deployment
-terraform apply --var yaml_config_path=../config/lakeflow_<env>.yml
+poetry run terraform apply --var yaml_config_path=../config/lakeflow_<env>.yml
 ```
+
+**Note:** While `terraform plan` does not require `poetry run` (since the gateway validation Python script is executed only during `apply`), we recommend using `poetry run` for both `plan` and `apply` to provide a consistent workflow and environment.
 
 ## YAML Configuration
 
 See `config/examples/` for complete example configurations ([PostgreSQL](config/examples/postgresql.yml), [SQL Server](config/examples/sqlserver.yml)). The configuration is fully YAML-driven with the following main sections:
+
+### Connection
+```yaml
+connection:
+  name: "my_uc_connection"
+  source_type: "POSTGRESQL"  # POSTGRESQL, SQLSERVER, MYSQL
+```
 
 ### Unity Catalog Configuration
 ```yaml
@@ -254,13 +275,6 @@ unity_catalog:
 - `global_uc_catalog`: Default catalog where ingestion pipeline tables land (required)
 - `staging_uc_catalog`: Catalog for gateway pipeline staging assets (optional, defaults to `global_uc_catalog`)
 - `staging_schema`: Schema name for gateway staging assets (optional, defaults to `{app_name}_lf_staging`)
-
-### Connection
-```yaml
-connection:
-  name: "my_uc_connection"
-  source_type: "POSTGRESQL"  # POSTGRESQL, SQLSERVER, MYSQL, ORACLE
-```
 
 ### Databases
 ```yaml

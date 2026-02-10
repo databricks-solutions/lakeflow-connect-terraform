@@ -2,6 +2,11 @@
 env: "dev"
 app_name: "retail_ops"
 
+# Provider the name of the Unity catalog connection
+connection:
+  name: "sql_retail_ops_connection"
+  source_type: "SQLSERVER"
+
 # Unity Catalog configuration
 # global_uc_catalog: Default UC catalog where ingestion pipeline tables will land
 # staging_uc_catalog: UC catalog for gateway pipeline staging assets (defaults to global_uc_catalog if not provided)
@@ -10,11 +15,6 @@ unity_catalog:
   global_uc_catalog: "lf_connect_demo_catalog"
   staging_uc_catalog: "lf_connect_common_staging"  # Optional: if not provided, defaults to global_uc_catalog
   staging_schema: "gateway_assets"  # Optional: if not provided, defaults to {app_name}_lf_staging
-
-# Provider the name of the Unity catalog connection for the SQL Server
-connection:
-  name: "sql_retail_ops_connection"
-  source_type: "SQLSERVER"
 
 # The cluster policy used with the deployment of the gateway pipeline
 gateway_pipeline_cluster_policy_name: job_compute_for_spn_for_lf_connect
