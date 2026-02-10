@@ -3,6 +3,12 @@
 This project is intended to deploy and scale out database connectors to the Databricks Lakehouse platform using infrastructure-as-code principles.
 It is intended to be a database-agnostic, YAML-driven Terraform deployment for Databricks Lakeflow Connect that provides built-in validation and orchestration for deployments.
 
+## Quick Visual Tour
+
+![Quick Visual Tour Animation](docs/assets/images/lakeflow-connect-terraform.gif)
+
+
+
 ## Key Features:
 - **Database-agnostic**: Supports various Lakeflow Connect-supported databases by simply changing the `source_type` in the config.
     - Currently tested and verified connectors are:
@@ -22,7 +28,13 @@ It is intended to be a database-agnostic, YAML-driven Terraform deployment for D
 
 ## Overview
 
-This project allows you to deploy components in the architecture described below.
+This project deploys a subset of the architecture shown below, focusing on infrastructure needed to run Lakeflow Connect data ingestion. Specifically, this project will deploy:
+
+- The Lakeflow Connect Gateway pipeline, using a pre-existing Unity Catalog connection (**Note:** The connection itself is not created or managed by this project)
+- Managed Ingestion pipelines for each configured database/schema/table combination, as defined in your YAML configuration
+- Databricks Jobs to orchestrate and schedule the ingestion pipeline workflows
+- (Optional) Event log tables used for pipeline monitoring and audit (created if configured in your YAML)
+
 
 ![Lakeflow Connect Architecture Overview](docs/assets/images/lakeflow_connect_architecture.png)
 
@@ -229,13 +241,17 @@ Other Remote Backend Options can be used. See [Terraform Backend Documentation](
 
 ### Step 5: Deploy Infrastructure
 
+Run Terraform via `poetry run` so that the gateway validation step (which runs a Python script using the Databricks SDK) has access to the project's Python dependencies.
+
 ```bash
 # Plan deployment (review changes)
-terraform plan --var yaml_config_path=../config/lakeflow_<env>.yml
+poetry run terraform plan --var yaml_config_path=../config/lakeflow_<env>.yml
 
 # Apply deployment
-terraform apply --var yaml_config_path=../config/lakeflow_<env>.yml
+poetry run terraform apply --var yaml_config_path=../config/lakeflow_<env>.yml
 ```
+
+**Note:** While `terraform plan` does not require `poetry run` (since the gateway validation Python script is executed only during `apply`), we recommend using `poetry run` for both `plan` and `apply` to provide a consistent workflow and environment.
 
 ## YAML Configuration
 
