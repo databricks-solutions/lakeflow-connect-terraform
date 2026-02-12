@@ -1,0 +1,115 @@
+# Application name and Databricks environment name
+env: "dev"
+app_name: "oracle_test"
+
+# Provider the name of the Unity catalog connection
+connection:
+  name: "lf_connect_oracle19c"
+  source_type: "ORACLE"
+  # connection_parameters only applies when source_type is ORACLE (e.g. CDB name)
+  connection_parameters:
+    source_catalog: "ORCLCDB"
+
+# Unity Catalog configuration
+# global_uc_catalog: Default UC catalog where ingestion pipeline tables will land
+# staging_uc_catalog: UC catalog for gateway pipeline staging assets (defaults to global_uc_catalog if not provided)
+# staging_schema: Schema name for gateway pipeline staging assets (defaults to {app_name}_lf_staging if not provided)
+unity_catalog:
+  global_uc_catalog: "lf_connect_demo_catalog"
+  staging_uc_catalog: "lf_connect_common_staging"  # Optional: if not provided, defaults to global_uc_catalog
+  staging_schema: "gateway_assets"  # Optional: if not provided, defaults to {app_name}_lf_staging
+
+# The cluster policy used with the deployment of the gateway pipeline
+gateway_pipeline_cluster_policy_name: job_compute_for_spn_for_lf_connect
+
+# List of databases within the Oracle to ingest from
+# The 'use_schema_ingestion' flag determines whether all tables in the schema are ingested automatically (true)
+# or only the explicitly listed tables are ingested (false). Setting it to 'true' will ignore the 'tables' list.
+databases:
+  - name: ORAPDB1
+    # Optional: Override global_uc_catalog for this specific database
+    # uc_catalog: "custom_catalog_name"  # If not provided, uses global_uc_catalog
+
+    # Optional: Add prefix/suffix to schema names for this database. In UC, it will be visible as {schema_prefix}{<the schema name>}{schema_suffix}
+    # Example: With prefix "orapdb1_" → orapdb1_client_management
+    # Example: With suffix "_raw" → client_management_raw
+    schema_prefix: "orapdb1_"
+    # schema_suffix: "_raw"
+
+    schemas:
+      - name: CLIENT_MANAGEMENT
+        use_schema_ingestion: false
+        tables:
+          - source_table: CLIENTS
+          - source_table: ACCOUNTS
+          - source_table: ADVISORS
+  # - name: ORAPDB2
+  #   # Optional: Override global_uc_catalog for this specific database
+  #   uc_catalog: "lf_connect_another"  # If not provided, uses global_uc_catalog
+  #
+  #   # Optional: Add prefix/suffix to schema names for this database. In UC, it will be visible as {schema_prefix}{<the schema name>}{schema_suffix}
+  #   schema_prefix: "orapdb2_"
+  #   schema_suffix: "_v2"
+  #
+  #   schemas:
+  #     - name: CLIENT_MANAGEMENT
+  #       use_schema_ingestion: false
+  #       tables:
+  #         - source_table: CLIENTS
+  #         - source_table: ACCOUNTS
+  #         - source_table: ADVISORS
+  #     - name: PORTFOLIO_MANAGEMENT
+  #       use_schema_ingestion: false
+  #       tables:
+  #         - source_table: HOLDINGS
+  #         - source_table: PORTFOLIOS
+  #         - source_table: TRANSACTIONS
+
+# Create one gateway pipeline for the entire application
+gateway_pipeline_cluster_config:
+  label: "default"
+  node_type_id: "Standard_E4d_v4"
+  autoscale:
+    min_workers: 0
+    max_workers: 0
+    mode: ENHANCED
+  apply_policy_default_values: false
+  enable_local_disk_encryption: false
+  custom_tags: {}
+  spark_conf: {}
+  spark_env_vars: {}
+  ssh_public_keys: []
+
+# Gateway validation configuration : This configuration is used by a script to validate that the gateway pipeline is running before the job resource is created/updated.
+gateway_validation:
+  timeout_minutes: 30
+  check_interval_seconds: 15
+
+# Event log configuration : Control whether pipeline event logs are materialized to Delta tables
+# When enabled, event logs are written to Delta tables in the respective schemas:
+#   - Gateway pipeline: logs to the staging schema (<app>_lf_staging)
+#   - Ingestion pipelines: logs to their respective landing schemas (<app>_lf_<database>)
+event_log:
+  to_table: true  # Set to false to disable event log table creation
+
+# Create orchestration using Lakeflow Jobs to run ingestion pipelines
+job:
+  common_job_for_all_pipelines: false
+  common_schedule:
+    quartz_cron_expression: "0 */30 * * * ?"  # This schedule applies if 'common_job_for_all_pipelines' is 'true'
+    timezone_id: "UTC"
+
+  # Per-database schedules apply when common_job_for_all_pipelines is false
+  # Each schedule group can apply to one or more databases
+  # Multiple databases can share the same schedule by listing them in 'applies_to'
+  per_database_schedules:
+    - name: "frequent_sync"
+      applies_to: ["ORAPDB1"]
+      schedule:
+        quartz_cron_expression: "0 */15 * * * ?"  # Run every 15 minutes
+        timezone_id: "UTC"
+    - name: "hourly_sync"
+      applies_to: []  # Add "ORAPDB2" when uncommenting second database above
+      schedule:
+        quartz_cron_expression: "0 0 * * * ?"  # Run every hour
+        timezone_id: "UTC"
