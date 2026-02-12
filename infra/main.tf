@@ -31,6 +31,8 @@ module "gateway" {
   connection_name         = local.connection.name
   gateway_storage_catalog = local.staging_uc_catalog
   gateway_storage_schema  = local.staging_schema_name
+  source_type             = try(local.connection.source_type, null)
+  connection_parameters  = try(local.connection.connection_parameters, null)
   cluster                 = local.cfg.gateway_pipeline_cluster_config
   cluster_policy_name     = local.cfg.gateway_pipeline_cluster_policy_name
   event_log_to_table      = local.event_log_to_table

@@ -14,6 +14,7 @@ It is intended to be a database-agnostic, YAML-driven Terraform deployment for D
     - Currently tested and verified connectors are:
         - SQL Server CDC ([Public docs](https://docs.databricks.com/en/connect/unity-catalog/sql-server.html))
         - PostgreSQL CDC ([Public docs](https://docs.databricks.com/en/connect/unity-catalog/postgresql.html))
+        - Oracle (public docs to be added once in public preview)
 - **YAML-driven configuration**: Define connections, databases, schemas, tables, and schedules in a single configuration file
 - **Flexible Unity Catalog mapping**: Configure where data lands with per-database catalog and schema customization
 - **Flexible ingestion modes**: Choose between full schema ingestion or specific table selection per database
@@ -46,9 +47,9 @@ lakeflow-connect-terraform/
 ├── config/                      # YAML configuration files
 │   ├── lakeflow_dev.yml        # Active configuration
 │   └── examples/                # Example configurations
-│       ├── postgresql.yml       # PostgreSQL example
-│       ├── sqlserver.yml        # SQL Server example
-│       └── README.md            # Examples documentation
+│       ├── oracle.yml            # Oracle example
+│       ├── postgresql.yml        # PostgreSQL example
+│       └── sqlserver.yml         # SQL Server example
 ├── infra/                       # Terraform root module
 │   ├── backend.tf
 │   ├── main.tf
@@ -85,6 +86,7 @@ Create a Databricks Unity Catalog connection to your source database and specify
 Refer to Databricks documentation for your database type:
 - [SQL Server Connection Setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-overview)
 - [PostgreSQL Connection Setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql-source-setup)
+- **Oracle**: Create a Unity Catalog connection to your Oracle source. (public docs to be added once in public preview)
 
 #### 2. Create Unity Catalog Structure
 Based on your YAML configuration in the `unity_catalog` section, pre-create:
@@ -105,6 +107,9 @@ Refer to [PostgreSQL Replication Setup](https://docs.databricks.com/aws/en/inges
 
 **For SQL Server Sources:**
 Ensure CDC is enabled on the source database and tables. Refer to [SQL Server CDC Setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-pipeline).
+
+**For Oracle Sources:**
+In your YAML config, set `connection.source_type: "ORACLE"` and provide `connection.connection_parameters.source_catalog` with your Oracle CDB (container database) name (e.g. `ORCLCDB`). See `config/examples/oracle.yml`. (public docs to be added once in public preview)
 
 #### 4. Grant Permissions
 Provide the user/SPN used for Terraform deployment with:
@@ -138,6 +143,9 @@ cp config/examples/postgresql.yml config/lakeflow_<your_env>.yml
 # For SQL Server:
 cp config/examples/sqlserver.yml config/lakeflow_<your_env>.yml
 
+# For Oracle:
+cp config/examples/oracle.yml config/lakeflow_<your_env>.yml
+
 # Edit the YAML file with your environment details
 ```
 
@@ -158,7 +166,7 @@ poetry run python tools/pydantic_validator.py config/lakeflow_<your_env>.yml
 
 **What gets validated:**
 - ✅ **Type safety**: Boolean values must be `true/false`, not strings
-- ✅ **Source-specific config**: PostgreSQL requires `replication_slot` and `publication`
+- ✅ **Source-specific config**: PostgreSQL requires `replication_slot` and `publication`; Oracle requires `connection_parameters.source_catalog` (CDB name)
 - ✅ **Cross-references**: Database names in schedules must exist
 - ✅ **Unity Catalog logic**: Validates catalog configuration rules
 - ✅ **Cron expressions**: Validates Quartz cron syntax
@@ -255,13 +263,17 @@ poetry run terraform apply --var yaml_config_path=../config/lakeflow_<env>.yml
 
 ## YAML Configuration
 
-See `config/examples/` for complete example configurations ([PostgreSQL](config/examples/postgresql.yml), [SQL Server](config/examples/sqlserver.yml)). The configuration is fully YAML-driven with the following main sections:
+See `config/examples/` for complete example configurations ([Oracle](config/examples/oracle.yml), [PostgreSQL](config/examples/postgresql.yml), [SQL Server](config/examples/sqlserver.yml)). The configuration is fully YAML-driven with the following main sections:
 
 ### Connection
 ```yaml
 connection:
   name: "my_uc_connection"
-  source_type: "POSTGRESQL"  # POSTGRESQL, SQLSERVER, MYSQL
+  source_type: "POSTGRESQL"  # POSTGRESQL, SQLSERVER, MYSQL, ORACLE
+
+# Oracle only: required when source_type is ORACLE (CDB name for gateway)
+# connection_parameters:
+#   source_catalog: "ORCLCDB"
 ```
 
 ### Unity Catalog Configuration

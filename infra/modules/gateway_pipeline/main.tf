@@ -20,6 +20,20 @@ variable "gateway_storage_schema" {
   type        = string
 }
 
+variable "source_type" {
+  description = "Source type of the connection (e.g. SQLSERVER, POSTGRESQL, ORACLE). When ORACLE, connection_parameters may be set."
+  type        = string
+  default     = null
+}
+
+variable "connection_parameters" {
+  description = "Optional connection parameters for the gateway. Only used when source_type is ORACLE (e.g. source_catalog for Oracle CDB)."
+  type = object({
+    source_catalog = optional(string)
+  })
+  default = null
+}
+
 variable "cluster" {
   description = "Cluster configuration for the gateway pipeline"
   type = object({
@@ -67,6 +81,15 @@ resource "databricks_pipeline" "gateway" {
     gateway_storage_catalog = var.gateway_storage_catalog
     gateway_storage_schema  = var.gateway_storage_schema
     gateway_storage_name    = "staging_folder"
+
+    # connection_parameters only when source_type is ORACLE (e.g. source_catalog for CDB).
+    # source_type is not an attribute on gateway_definition in the Terraform provider.
+    dynamic "connection_parameters" {
+      for_each = var.source_type == "ORACLE" && var.connection_parameters != null ? [1] : []
+      content {
+        source_catalog = try(var.connection_parameters.source_catalog, null)
+      }
+    }
   }
   channel                = "PREVIEW"
   allow_duplicate_names  = false

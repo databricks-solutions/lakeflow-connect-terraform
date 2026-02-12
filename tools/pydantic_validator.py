@@ -14,10 +14,11 @@ import yaml
 from croniter import croniter
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     field_validator,
     model_validator,
-    ConfigDict,
+    ValidationError,
 )
 
 
@@ -274,18 +275,41 @@ class UnityCatalogConfig(BaseModel):
         return v
 
 
+class OracleConnectionParameters(BaseModel):
+    """Oracle-specific connection parameters (e.g. CDB name for gateway)."""
+
+    source_catalog: str = Field(
+        ...,
+        description="Oracle CDB (container database) name, e.g. ORCLCDB"
+    )
+
+    @field_validator("source_catalog")
+    @classmethod
+    def validate_source_catalog(cls, v: str) -> str:
+        """Validate source_catalog is non-empty."""
+        if not v or not v.strip():
+            raise ValueError("connection_parameters.source_catalog cannot be empty for Oracle")
+        return v
+
+
 class ConnectionConfig(BaseModel):
     """Database connection configuration."""
-    
+
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(
         ...,
         description="Unity Catalog connection name"
     )
-    source_type: Literal["POSTGRESQL", "SQLSERVER", "MYSQL"] = Field(
+    source_type: Literal["POSTGRESQL", "SQLSERVER", "MYSQL", "ORACLE"] = Field(
         ...,
         description="Source database type"
     )
-    
+    connection_parameters: Optional[OracleConnectionParameters] = Field(
+        default=None,
+        description="Oracle-only: source_catalog (CDB name). Required when source_type is ORACLE."
+    )
+
     @field_validator("name")
     @classmethod
     def validate_name(cls, v: str) -> str:
@@ -293,6 +317,26 @@ class ConnectionConfig(BaseModel):
         if not v or not v.strip():
             raise ValueError("Connection name cannot be empty")
         return v
+
+    @model_validator(mode="after")
+    def validate_oracle_connection_parameters(self):
+        """
+        When source_type is ORACLE, connection_parameters with source_catalog is required.
+        When source_type is not ORACLE, connection_parameters must not be set.
+        """
+        if self.source_type == "ORACLE":
+            if self.connection_parameters is None:
+                raise ValueError(
+                    "connection.connection_parameters is required when source_type is ORACLE "
+                    "(e.g. connection_parameters.source_catalog for the CDB name)"
+                )
+        else:
+            if self.connection_parameters is not None:
+                raise ValueError(
+                    f"connection.connection_parameters is only valid for Oracle sources, "
+                    f"but source_type is {self.source_type}"
+                )
+        return self
 
 
 class AutoscaleConfig(BaseModel):
@@ -542,7 +586,7 @@ def validate_yaml(path: Path) -> int:
     """
     # Check if file exists
     if not path.exists():
-        print(f"❌ Config file not found: {path}", file=sys.stderr)
+        print(f"FAILED. Config file not found: {path}", file=sys.stderr)
         return 2
     
     # Parse YAML
@@ -550,37 +594,34 @@ def validate_yaml(path: Path) -> int:
         with open(path, "r") as f:
             data = yaml.safe_load(f)
     except yaml.YAMLError as e:
-        print(f"❌ YAML parse error: {e}", file=sys.stderr)
+        print(f"FAILED. YAML parse error: {e}", file=sys.stderr)
         return 3
     except Exception as e:
-        print(f"❌ Error reading file: {e}", file=sys.stderr)
+        print(f"FAILED. Error reading file: {e}", file=sys.stderr)
         return 2
     
     # Validate with Pydantic
     try:
         config = LakeflowConfig(**data)
-        print("✅ YAML validation passed!")
+        print("SUCCESS. YAML validation passed!")
         print(f"   - Environment: {config.env}")
         print(f"   - Application: {config.app_name}")
         print(f"   - Source type: {config.connection.source_type}")
         print(f"   - Databases: {len(config.databases)}")
         print(f"   - Event logs to table: {config.event_log.to_table if config.event_log else 'Not configured'}")
         return 0
+    except ValidationError as e:
+        print("FAILED. Validation failed:\n", file=sys.stderr)
+        for err in e.errors():
+            loc = ".".join(str(x) for x in err.get("loc", ()))
+            msg = err.get("msg", str(err))
+            print(f"   {loc}: {msg}", file=sys.stderr)
+        return 1
     except Exception as e:
-        print(f"❌ Validation failed:\n", file=sys.stderr)
-        
-        # Format error messages nicely
-        error_msg = str(e)
-        
-        # Pydantic v2 errors are more structured
-        if hasattr(e, "__cause__") and e.__cause__:
-            error_msg = str(e.__cause__)
-        
-        # Split multiple errors if present
-        for line in error_msg.split("\n"):
+        print(f"FAILED. Validation failed:\n", file=sys.stderr)
+        for line in str(e).split("\n"):
             if line.strip():
                 print(f"   {line}", file=sys.stderr)
-        
         return 1
 
 
