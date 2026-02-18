@@ -91,7 +91,6 @@ resource "databricks_pipeline" "gateway" {
       }
     }
   }
-  channel                = "PREVIEW"
   allow_duplicate_names  = false
   development            = false
   continuous             = true

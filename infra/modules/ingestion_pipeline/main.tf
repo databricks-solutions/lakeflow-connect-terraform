@@ -117,7 +117,6 @@ resource "databricks_pipeline" "ingest" {
   }
   schema  = var.destination_schema
   catalog = var.destination_catalog
-  channel = "PREVIEW"
 
   # Dynamically adjust based on choice made in configuration
   dynamic "event_log" {
