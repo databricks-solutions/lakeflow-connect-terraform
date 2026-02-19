@@ -12,9 +12,10 @@ It is intended to be a database-agnostic, YAML-driven Terraform deployment for D
 ## Key Features:
 - **Database-agnostic**: Supports various Lakeflow Connect-supported databases by simply changing the `source_type` in the config.
     - Currently tested and verified connectors are:
-        - SQL Server CDC ([Public docs](https://docs.databricks.com/en/connect/unity-catalog/sql-server.html))
-        - PostgreSQL CDC ([Public docs](https://docs.databricks.com/en/connect/unity-catalog/postgresql.html))
+        - SQL Server CDC ([Public docs](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-pipeline))
+        - PostgreSQL CDC ([Public docs](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql-pipeline))
         - Oracle (public docs to be added once in public preview)
+        - MySQL ([Public docs](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/mysql-pipeline))
 - **YAML-driven configuration**: Define connections, databases, schemas, tables, and schedules in a single configuration file
 - **Flexible Unity Catalog mapping**: Configure where data lands with per-database catalog and schema customization
 - **Flexible ingestion modes**: Choose between full schema ingestion or specific table selection per database
@@ -47,6 +48,7 @@ lakeflow-connect-terraform/
 ├── config/                      # YAML configuration files
 │   ├── lakeflow_dev.yml        # Active configuration
 │   └── examples/                # Example configurations
+│       ├── mysql.yml             # MySQL example
 │       ├── oracle.yml            # Oracle example
 │       ├── postgresql.yml        # PostgreSQL example
 │       └── sqlserver.yml         # SQL Server example
@@ -86,6 +88,7 @@ Create a Databricks Unity Catalog connection to your source database and specify
 Refer to Databricks documentation for your database type:
 - [SQL Server Connection Setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-overview)
 - [PostgreSQL Connection Setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql-source-setup)
+- [MySQL Connection Setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/mysql-privileges)
 - **Oracle**: Create a Unity Catalog connection to your Oracle source. (public docs to be added once in public preview)
 
 #### 2. Create Unity Catalog Structure
@@ -110,6 +113,9 @@ Ensure CDC is enabled on the source database and tables. Refer to [SQL Server CD
 
 **For Oracle Sources:**
 In your YAML config, set `connection.source_type: "ORACLE"` and provide `connection.connection_parameters.source_catalog` with your Oracle CDB (container database) name (e.g. `ORCLCDB`). See `config/examples/oracle.yml`. (public docs to be added once in public preview)
+
+**For MySQL Sources:**
+MySQL has no schema level (server → database → tables). In the YAML, list each database and under `schemas` use a placeholder name (e.g. `"<not applicable in MySQL>"`) and list tables by their **full MySQL table name**. Set `connection.source_type: "MYSQL"`. If you set `use_schema_ingestion: true`, it is ignored and ingestion uses the tables list; the Pydantic validator prints an info message when you run it. See `config/examples/mysql.yml`.
 
 #### 4. Grant Permissions
 Provide the user/SPN used for Terraform deployment with:
@@ -145,6 +151,9 @@ cp config/examples/sqlserver.yml config/lakeflow_<your_env>.yml
 
 # For Oracle:
 cp config/examples/oracle.yml config/lakeflow_<your_env>.yml
+
+# For MySQL:
+cp config/examples/mysql.yml config/lakeflow_<your_env>.yml
 
 # Edit the YAML file with your environment details
 ```
@@ -263,7 +272,7 @@ poetry run terraform apply --var yaml_config_path=../config/lakeflow_<env>.yml
 
 ## YAML Configuration
 
-See `config/examples/` for complete example configurations ([Oracle](config/examples/oracle.yml), [PostgreSQL](config/examples/postgresql.yml), [SQL Server](config/examples/sqlserver.yml)). The configuration is fully YAML-driven with the following main sections:
+See `config/examples/` for complete example configurations ([MySQL](config/examples/mysql.yml), [Oracle](config/examples/oracle.yml), [PostgreSQL](config/examples/postgresql.yml), [SQL Server](config/examples/sqlserver.yml)). The configuration is fully YAML-driven with the following main sections:
 
 ### Connection
 ```yaml
@@ -311,12 +320,18 @@ databases:
         tables:
           - source_table: users
           - source_table: orders
+          # Optional per-table overrides (default to schema/database-level catalog and schema):
+          - source_table: orders_archive
+            destination_table: orders_archive_v2  # optional
+            destination_catalog: other_catalog   # optional
+            destination_schema: other_schema    # optional
 ```
 
 - Per-database `uc_catalog`: Override global catalog for specific database (optional)
 - Per-database `schema_prefix` and `schema_suffix`: Customize destination schema names (optional)
 - Per-database `replication_slot` and `publication`: PostgreSQL replication configuration (PostgreSQL only)
 - Schemas and tables to ingest with granular control
+- Per-table destination overrides: For table-level ingestion (`use_schema_ingestion: false`), each table can optionally specify `destination_table`, `destination_catalog`, and `destination_schema`. When set, they override the pipeline default (from database/schema config). Catalogs and schemas used by per-table overrides are validated and must exist in Unity Catalog.
 
 ### Event Logs
 ```yaml

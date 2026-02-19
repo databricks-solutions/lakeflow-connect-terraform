@@ -140,6 +140,18 @@ class TableConfig(BaseModel):
         ...,
         description="Source table name"
     )
+    destination_table: Optional[str] = Field(
+        default=None,
+        description="Destination table name in Unity Catalog (defaults to source_table)"
+    )
+    destination_catalog: Optional[str] = Field(
+        default=None,
+        description="Override destination catalog for this table (defaults to schema/database-level catalog)"
+    )
+    destination_schema: Optional[str] = Field(
+        default=None,
+        description="Override destination schema for this table (defaults to schema/database-level schema)"
+    )
     
     @field_validator("source_table")
     @classmethod
@@ -518,6 +530,25 @@ class LakeflowConfig(BaseModel):
         
         return self
     
+    @model_validator(mode="after")
+    def validate_mysql_schema_ingestion_warning(self):
+        """
+        For MySQL: use_schema_ingestion=true does not apply (no schema level).
+        Emit a warning when set; Terraform will ignore it and use table-level ingestion.
+        """
+        if self.connection.source_type != "MYSQL":
+            return self
+        for db in self.databases:
+            for schema in db.schemas:
+                if schema.use_schema_ingestion:
+                    print(
+                        "INFO: 'use_schema_ingestion' setting as True does not apply for MySQL. "
+                        "Ignoring and ingesting based on tables passed.",
+                        file=sys.stderr,
+                    )
+                    return self  # One warning is enough
+        return self
+
     @model_validator(mode="after")
     def validate_per_database_schedules(self):
         """

@@ -36,8 +36,10 @@ variable "source_type" {
 variable "specific_tables" {
   description = "List of specific tables to ingest instead of entire schema"
   type = list(object({
-    source_table        = string
-    destination_table   = optional(string) # Optional: if not provided, uses source_table
+    source_table          = string
+    destination_table     = optional(string) # Optional: if not provided, uses source_table
+    destination_catalog   = optional(string)  # Optional: if not provided, uses pipeline-level destination_catalog
+    destination_schema    = optional(string)  # Optional: if not provided, uses pipeline-level destination_schema
   }))
   default = []
 }
@@ -91,9 +93,9 @@ resource "databricks_pipeline" "ingest" {
           source_catalog      = var.source_catalog
           source_schema       = var.source_schema
           source_table        = objects.value.source_table
-          destination_catalog = var.destination_catalog
-          destination_schema  = var.destination_schema
-          destination_table   = objects.value.destination_table != null ? objects.value.destination_table : objects.value.source_table
+          destination_catalog = coalesce(objects.value.destination_catalog, var.destination_catalog)
+          destination_schema  = coalesce(objects.value.destination_schema, var.destination_schema)
+          destination_table   = coalesce(objects.value.destination_table, objects.value.source_table)
         }
       }
     }

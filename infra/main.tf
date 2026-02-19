@@ -10,18 +10,13 @@ module "staging" {
   schemas      = [local.staging_schema_name]
 }
 
-# Validate catalogs and schemas where ingestion pipelines will land data
-# Group schemas by their target catalog
+# Validate catalogs and schemas where ingestion pipelines will land data (includes per-table overrides)
 module "landing_catalog_validation" {
   source   = "./modules/validate_catalog_and_schemas"
   for_each = local.landing_catalogs_map
 
   catalog_name = each.key
-  schemas = distinct([
-    for pair in local.database_schema_pairs :
-    pair.destination_schema
-    if pair.uc_catalog == each.key
-  ])
+  schemas      = each.value
 }
 
 module "gateway" {
@@ -44,14 +39,14 @@ module "ingestion" {
 
   for_each = { for pair in local.database_schema_pairs : pair.pair_key => pair }
 
-  name                  = "${each.value.database_name}-${each.value.schema_name}-ingestion"
-  source_catalog        = each.value.database_name
-  source_schema         = each.value.schema_name
+  name                  = local.is_mysql ? "${each.value.pair_key}-ingestion" : "${each.value.database_name}-${each.value.schema_name}-ingestion"
+  source_catalog        = local.is_mysql ? "default_catalog" : each.value.database_name
+  source_schema         = local.is_mysql ? each.value.database_name : each.value.schema_name
   destination_catalog   = each.value.uc_catalog
   destination_schema    = each.value.destination_schema
   gateway_pipeline_id   = module.gateway.pipeline_id
   source_type           = local.connection.source_type
-  use_schema_ingestion  = each.value.use_schema_ingestion
+  use_schema_ingestion  = local.is_mysql ? false : each.value.use_schema_ingestion # For MySQL, schema-level ingestion is not applicable hence ignore
   specific_tables       = each.value.specific_tables
   source_configurations = lookup(local.database_source_configurations, each.value.database_name, null)
   event_log_to_table    = local.event_log_to_table
