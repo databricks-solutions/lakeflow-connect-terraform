@@ -8,6 +8,9 @@ locals {
   connection = local.cfg.connection
   job        = local.cfg.job
 
+  # MySQL has no schema level (database = schema). Used to set source_catalog/source_schema and table naming.
+  is_mysql = try(local.connection.source_type, "") == "MYSQL"
+
   # Event log configuration - defaults to true if not specified
   event_log_to_table = try(local.cfg.event_log.to_table, true)
 
@@ -35,20 +38,33 @@ locals {
     pair.destination_schema
   ])
 
-  # Get list of unique catalogs grouped by catalog name for validation
-  landing_catalogs_map = {
+  # All (catalog, schema) landing targets including per-table overrides (destination_catalog, destination_schema)
+  all_landing_targets = distinct(flatten([
     for pair in local.database_schema_pairs :
-    pair.uc_catalog => pair.uc_catalog...
+    length(pair.specific_tables) > 0 ? [
+      for t in pair.specific_tables : {
+        catalog = try(t.destination_catalog, pair.uc_catalog)
+        schema  = try(t.destination_schema, pair.destination_schema)
+      }
+    ] : [
+      { catalog = pair.uc_catalog, schema = pair.destination_schema }
+    ]
+  ]))
+
+  # Map catalog name -> list of schemas for validation (includes per-table overrides)
+  landing_catalogs_map = {
+    for catalog in distinct([for t in local.all_landing_targets : t.catalog]) :
+    catalog => distinct([for t in local.all_landing_targets : t.schema if t.catalog == catalog])
   }
 
 
   # Create database-schema pairs for ingestion pipelines
   database_schema_pairs = distinct(flatten([
     for db in local.cfg.databases : [
-      for schema in db.schemas : {
+      for i, schema in db.schemas : {
         database_name        = db.name
         schema_name          = schema.name
-        pair_key             = "${db.name}_${schema.name}"
+        pair_key             = local.is_mysql ? "${db.name}_schema_${i}" : "${db.name}_${schema.name}"   # For MySQL, concept of schema does not exist, hence handling through arbitrary index
         use_schema_ingestion = try(schema.use_schema_ingestion, true)
         specific_tables      = try(schema.tables, [])
         # For PostgreSQL: Pass replication slot and publication info if present
@@ -57,7 +73,12 @@ locals {
         # UC catalog and schema configuration for this database-schema pair
         uc_catalog = try(db.uc_catalog, local.global_uc_catalog)
         # Build destination schema name: {prefix}{source_schema_name}{suffix}
-        destination_schema = join("", [
+        # For MySQL (no schema level), use database name so one UC schema per MySQL database
+        destination_schema = local.is_mysql ? join("", [
+          try(db.schema_prefix, ""),
+          db.name,
+          try(db.schema_suffix, "")
+        ]) : join("", [
           try(db.schema_prefix, ""),
           schema.name,
           try(db.schema_suffix, "")

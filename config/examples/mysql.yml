@@ -1,0 +1,95 @@
+# MySQL has server → database → tables (no schema level; database and schema are synonymous).
+# In this config you list each database and under schemas use a placeholder name (e.g. "<not applicable in MySQL>")
+# and list tables by their full MySQL table name. The infra maps:
+#   - source_catalog (API) → "default_catalog"
+#   - source_schema (API)  → database name (the MySQL "database")
+#   - source_table (API)  → exactly the table names you list below (full names)
+
+env: "dev"
+app_name: "wealth_mgmt"
+
+connection:
+  name: "mysql_aurora_amenon_connection_v1"
+  source_type: "MYSQL"
+
+unity_catalog:
+  global_uc_catalog: "amenon"
+  staging_uc_catalog: "amenon"
+  staging_schema: "default"
+
+gateway_pipeline_cluster_policy_name: job_compute_for_spn_for_lf_connect
+
+# For MySQL, each entry under 'databases' is a MySQL database. Use placeholder schema name
+# (e.g. "<not applicable in MySQL>") and list tables by their full name. destination_schema in UC
+# is one per database (db.name); optional schema_prefix/schema_suffix apply to that.
+databases:
+  - name: wealth_mgmt_one
+    # schema_prefix / schema_suffix apply to destination_schema (default: db.name)
+    # schema_prefix: "wm1_"
+    # schema_suffix: "_raw"
+    schemas:
+      - name: _ #"<not applicable in MySQL>"
+        use_schema_ingestion: true
+        tables:
+          - source_table: client_management_accounts
+          - source_table: client_management_advisors
+          - source_table: client_management_clients
+      - name: _ #"<not applicable in MySQL>"
+        use_schema_ingestion: true
+        tables:
+          - source_table: portfolio_management_holdings
+          - source_table: portfolio_management_portfolios
+          - source_table: portfolio_management_transactions
+  - name: wealth_mgmt_two
+    uc_catalog: "amenon"
+    schemas:
+      - name: "<not applicable in MySQL>"
+        use_schema_ingestion: false
+        tables:
+          - source_table: client_management_accounts
+          - source_table: client_management_advisors
+          - source_table: client_management_clients
+      - name: "<not applicable in MySQL>"
+        use_schema_ingestion: false
+        tables:
+          - source_table: portfolio_management_holdings
+          - source_table: portfolio_management_portfolios
+          - source_table: portfolio_management_transactions
+
+gateway_pipeline_cluster_config:
+  label: "default"
+  node_type_id: "r5.xlarge"  # Note: This is an AWS compute example being used.
+  autoscale:
+    min_workers: 0
+    max_workers: 0
+    mode: ENHANCED
+  apply_policy_default_values: false
+  enable_local_disk_encryption: false
+  custom_tags: {}
+  spark_conf: {}
+  spark_env_vars: {}
+  ssh_public_keys: []
+
+gateway_validation:
+  timeout_minutes: 30
+  check_interval_seconds: 15
+
+event_log:
+  to_table: true
+
+job:
+  common_job_for_all_pipelines: false
+  common_schedule:
+    quartz_cron_expression: "0 */30 * * * ?"
+    timezone_id: "UTC"
+  per_database_schedules:
+    - name: "frequent_sync"
+      applies_to: ["wealth_mgmt_one"]
+      schedule:
+        quartz_cron_expression: "0 */15 * * * ?"
+        timezone_id: "UTC"
+    - name: "hourly_sync"
+      applies_to: ["wealth_mgmt_two"]
+      schedule:
+        quartz_cron_expression: "0 0 * * * ?"
+        timezone_id: "UTC"
