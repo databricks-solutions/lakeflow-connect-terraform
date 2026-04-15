@@ -84,7 +84,7 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v4.3.1
 
       - name: Set up Python venv and install dependencies
         run: |
@@ -136,7 +136,7 @@ jobs:
       has_changes: ${{ steps.plan.outputs.has_changes }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v4.3.1
 
       - name: Set up Python venv and install dependencies
         run: |
@@ -236,7 +236,7 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v4.3.1
 
       - name: Install Python dependencies for local-exec
         run: |
