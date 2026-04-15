@@ -41,8 +41,8 @@
 name: "Terraform Deploy - Lakeflow Connect"
 
 on:
-  # Auto-run plan on push to main (when infra or config changes)
-  push:
+  # Run validate + plan on PRs targeting main (when infra or config changes)
+  pull_request:
     branches: [main]
     paths:
       - "infra/**"
