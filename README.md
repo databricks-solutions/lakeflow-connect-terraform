@@ -54,6 +54,7 @@ lakeflow-connect-terraform/
 │       └── sqlserver.yml         # SQL Server example
 ├── infra/                       # Terraform root module
 │   ├── backend.tf
+│   ├── backend.local.tfvars.example  # Copy to backend.local.tfvars (non-secrets only; gitignored)
 │   ├── main.tf
 │   ├── locals.tf
 │   ├── outputs.tf
@@ -214,47 +215,116 @@ export DATABRICKS_CONFIG_PROFILE=production
 
 ### Step 4: Configure Terraform Backend
 
-**Option A: Local Backend (Default - For Single User)**
+Terraform stores [state](https://developer.hashicorp.com/terraform/language/state) in a **backend**. This repository ships with **`azurerm` (Azure Blob Storage)** as an **example** of a **remote** backend for teams and CI; you can swap it for any other [supported backend](https://developer.hashicorp.com/terraform/language/settings/backends) (Amazon S3, Google Cloud Storage, Terraform Cloud, etc.) by changing `infra/backend.tf` and following that backend’s init instructions.
 
-The project is configured with local backend by default. State is stored at `infra/terraform.tfstate`.
+**Who touches the state blob (remote `azurerm` example only)**
+
+State in Azure Storage is **not** opened using whatever you set in `ARM_CLIENT_ID` for deployment unless you deliberately use the **same** app registration for both roles.
+
+| Identity | Purpose | When it is used |
+|----------|---------|-----------------|
+| **TF state SPN** | **Only** Azure Blob access for the Terraform state file | Supplied at **`terraform init`** time—via **environment variables** (recommended) and/or `-backend-config` flags that reference them—**not** by committing secrets in a repo file. This principal **does not** deploy Databricks resources; it only needs access to the state container/blob. |
+| **Deploy SPN** | Databricks (and any Azure usage your root module expects via providers) | **`ARM_*` and `DATABRICKS_*` during `terraform plan` / `apply`**—this is a **different** service principal in the recommended setup. |
+
+**Recommended:** use **two** Azure AD applications (two client IDs): one for state, one for deploy.  
+**Alternative:** a single app registration can fill both roles; then you may reuse the same values in env vars for init and for `ARM_*` during plan/apply—still use an explicit init step (file + `-backend-config` for credentials from env) so it is obvious which identity touches the state blob.
+
+**Azure permissions for the TF state SPN (Blob backend with `use_azuread_auth=true`)**
+
+The Entra ID application whose **client ID** you pass at init (for example via `TF_STATE_ARM_CLIENT_ID` and the matching secret) must be able to read and write the state blob. At minimum, assign that principal **[Storage Blob Data Contributor](https://learn.microsoft.com/azure/role-based-access-control/built-in-roles#storage-blob-data-contributor)** on the **Azure Storage blob container** that holds Terraform state (or on the parent **storage account** if you prefer a broader scope).
+
+Grant this principal **data-plane** access via Azure RBAC, not storage account keys:
+
+- **Minimum:** **Storage Blob Data Contributor** scoped to the state **container** is sufficient for typical state locking and read/write.
+- `use_azuread_auth=true` means Terraform authenticates to Blob Storage with Azure AD; the SPN must be able to read and write that blob.
+
+---
+
+#### Option A — Local backend (simple / single user)
+
+In `infra/backend.tf`, comment out `backend "azurerm" {}` and uncomment `backend "local" {}` (only one backend block may be active). Then:
 
 ```bash
 cd infra
-terraform init
-terraform validate
-```
-
-**Option B: Remote Backend (Recommended for Teams)**
-
-For team collaboration, use a remote backend like Azure Storage. Update `infra/backend.tf`:
-
-```hcl
-terraform {
-  backend "azurerm" {
-    resource_group_name  = "terraform-state-rg"
-    storage_account_name = "tfstatelakeflow"
-    container_name       = "tfstate"
-    key                  = "lakeflow-connect.tfstate"
-  }
-}
-```
-
-Then initialize with the backend configuration:
-```bash
-cd infra
-
-# Set Azure credentials
-export ARM_SUBSCRIPTION_ID="<subscription_id>"
-export ARM_TENANT_ID="<tenant_id>"
-export ARM_CLIENT_ID="<client_id>"
-export ARM_CLIENT_SECRET="<client_secret>"
-
-# Initialize with remote backend
 terraform init -reconfigure
 terraform validate
 ```
 
-Other Remote Backend Options can be used. See [Terraform Backend Documentation](https://developer.hashicorp.com/terraform/language/settings/backends) for more options.
+State file path: `infra/terraform.tfstate`. Do not commit that file if you later move to shared remote state. No TF state SPN or Azure storage setup is required for this option.
+
+---
+
+#### Option B — Remote backend (example: Azure Storage / `azurerm`) - This is recommended, if one has access to a remote backend state store while developing.
+
+`infra/backend.tf` uses an **empty** `backend "azurerm" {}` block ([partial configuration](https://developer.hashicorp.com/terraform/language/settings/backends#partial-configuration)).  
+**Do not commit secrets:** keep storage **names** (and similar non-secrets) in a local file if you want; keep **TF state SPN** credentials in **environment variables** (or your CI/secret manager) and pass them into `terraform init` as shown below (same idea as the GitHub Actions workflows, which inject secrets as env-backed `terraform init` arguments).
+
+**Local / team: non-secret file + env vars for the TF state SPN**
+
+1. Copy the example and fill in **only** non-secret values (the copy is Git ignored by `*.tfvars`):
+
+   ```bash
+   cp infra/backend.local.tfvars.example infra/backend.local.tfvars
+   ```
+
+2. Edit `infra/backend.local.tfvars` with your storage account, container, and state blob **key**—**not** client IDs or secrets.
+
+3. Export the **TF state SPN** in your shell (names are suggestions; align with the `terraform init` command you use):
+
+   ```bash
+   export TF_STATE_ARM_CLIENT_ID="<tf_state_app_id>"
+   export TF_STATE_ARM_CLIENT_SECRET="<tf_state_secret>"
+   export TF_STATE_ARM_SUBSCRIPTION_ID="<subscription_for_state_blob>"
+   export TF_STATE_ARM_TENANT_ID="<tenant_id>"
+   ```
+
+   You can load these from a process manager, `direnv`, or a **gitignored** `.env` file (this repo already ignores `.env`) and never commits them.
+
+4. Initialize from `infra/` so credentials come from the environment (shell expands the variables; nothing secret is stored on disk in tracked files):
+
+   ```bash
+   cd infra
+   terraform init -reconfigure \
+     -backend-config=backend.local.tfvars \
+     -backend-config="client_id=${TF_STATE_ARM_CLIENT_ID}" \
+     -backend-config="client_secret=${TF_STATE_ARM_CLIENT_SECRET}" \
+     -backend-config="subscription_id=${TF_STATE_ARM_SUBSCRIPTION_ID}" \
+     -backend-config="tenant_id=${TF_STATE_ARM_TENANT_ID}"
+   terraform validate
+   ```
+
+5. For **plan/apply**, set environment variables for the **deploy** SPN and then run Terraform:  
+**Note:** - `DATABRICKS_CONFIG_PROFILE` env var is used below, however there are several other options to auth to Databricks. Refer to [Databricks Terraform provider Authentication documentation](https://registry.terraform.io/providers/databricks/databricks/latest/docs#authentication) for other options.
+
+   ```bash
+   export DATABRICKS_CONFIG_PROFILE=<Config profile of choice of Deploy SPN with access to Databricks assets>
+
+   poetry run terraform plan  --var yaml_config_path=../config/lakeflow_<env>.yml
+   poetry run terraform apply --var yaml_config_path=../config/lakeflow_<env>.yml
+   ```
+
+**Equivalent `terraform init` (CI or fully inline)**
+
+From `infra/`, you can pass the same non-secret keys as in `backend.local.tfvars` via repeated `-backend-config` flags (see `.github/workflows/terraform-deploy.yml` and `terraform-release.yml`). Supply **TF state** authentication the same way as locally: **secrets from environment variables** (CI: GitHub Actions secrets), not from committed files—for example:
+
+- `resource_group_name`, `storage_account_name`, `container_name`, `key`
+- `use_azuread_auth=true` (when using Azure AD / RBAC on the storage account)
+- `client_id`, `client_secret`, `subscription_id`, `tenant_id` for the **TF state** SPN via `-backend-config="..."` populated from your secret store or `${TF_STATE_ARM_*}` in a shell
+
+**GitHub Actions (this repo’s `azurerm` example)**
+
+Configure these **repository variables** (non-secret identifiers for the state blob):
+
+- `TF_STATE_RESOURCE_GROUP`
+- `TF_STATE_STORAGE_ACCOUNT`
+- `TF_STATE_CONTAINER`
+- `TF_STATE_KEY`
+
+Workflows pass them with `terraform init` alongside the TF state SPN **secrets** (`TF_STATE_ARM_*`, `ARM_TENANT_ID`). Plan/apply jobs set `ARM_*` to the **deploy** SPN.
+
+**Other remote backends**
+
+If you do not use Azure Blob, replace the backend block in `infra/backend.tf` with your chosen backend and follow HashiCorp’s documentation for that provider; the **deploy** SPN and YAML-driven Databricks resources stay the same—only state storage and `terraform init` differ.
 
 ### Step 5: Deploy Infrastructure
 
@@ -269,6 +339,73 @@ poetry run terraform apply --var yaml_config_path=../config/lakeflow_<env>.yml
 ```
 
 **Note:** While `terraform plan` does not require `poetry run` (since the gateway validation Python script is executed only during `apply`), we recommend using `poetry run` for both `plan` and `apply` to provide a consistent workflow and environment.
+
+## GitHub Actions CI/CD Setup
+
+This repository ships with five GitHub Actions workflows that run on a **self-hosted runner** and automate the full deployment and refresh lifecycle.
+
+### Workflows Overview
+
+| Workflow file | Trigger | Purpose |
+|---------------|---------|---------|
+| `terraform-deploy.yml` | Push to `main` (auto plan) or `workflow_dispatch` | Validate → Plan → Apply (with optional approval gate) |
+| `terraform-release.yml` | Semver tag push (e.g. `v1.0.0`) | Tag-gated Validate → Plan → Apply; tag must be tip of `main` |
+| `terraform-output-pipeline-ids.yml` | `workflow_dispatch` | Read-only: list all pipeline IDs from Terraform state |
+| `full-refresh-pipeline.yml` | `workflow_dispatch` | Trigger a full refresh of an entire ingestion pipeline |
+| `full-refresh-tables.yml` | `workflow_dispatch` | Trigger a full refresh of specific tables within a pipeline |
+
+### Self-Hosted Runner Prerequisites
+
+All workflows use `runs-on: self-hosted`. The runner machine must have:
+
+- **Terraform** >= 1.10 available on `PATH`
+- **Python venv activated** — the workflows use `python` (not `python3`). Activate the project's Poetry-managed venv in the runner's startup shell so that `python`, `pip`, and all SDK dependencies resolve correctly:
+
+  ```bash
+  source /path/to/poetry/virtualenvs/lakeflow-connect-terraform-<hash>-py3.XX/bin/activate
+  ```
+
+  To find the venv path on your machine:
+  ```bash
+  poetry env list --full-path
+  ```
+
+### Required Repository Secrets
+
+Configure these under **Settings → Secrets and variables → Actions → Secrets**:
+
+| Secret | Description | Used by |
+|--------|-------------|---------|
+| `ARM_TENANT_ID` | Azure AD tenant ID — shared by both SPNs | All workflows |
+| `DATABRICKS_HOST` | Databricks workspace URL (e.g. `https://adb-xxx.azuredatabricks.net`) | All workflows |
+| `TF_STATE_ARM_CLIENT_ID` | Client ID of the **TF State SPN** — authenticates to Azure Blob backend | `terraform-deploy`, `terraform-release`, `terraform-output-pipeline-ids` |
+| `TF_STATE_ARM_CLIENT_SECRET` | Client secret of the TF State SPN | same as above |
+| `TF_STATE_ARM_SUBSCRIPTION_ID` | Azure subscription ID that contains the TF state storage account | same as above |
+| `DEPLOY_SPN_CLIENT_ID` | Client ID of the **Deploy SPN** — used by the Databricks Terraform provider and SDK | All workflows |
+| `DEPLOY_SPN_CLIENT_SECRET` | Client secret of the Deploy SPN | All workflows |
+
+> **Two-SPN model:** `TF_STATE_*` credentials authenticate only to Azure Blob Storage (Terraform state); they never touch Databricks. `DEPLOY_SPN_*` credentials are the Databricks-registered service principal used for `terraform plan/apply`, Databricks SDK calls, and reading Terraform state outputs — consistently across all workflows. No PAT tokens are used. See the [Terraform Backend section](#step-4-configure-terraform-backend) for the full explanation.
+
+### Required Repository Variables
+
+Configure these under **Settings → Secrets and variables → Actions → Variables**:
+
+| Variable | Description | Used by |
+|----------|-------------|---------|
+| `TF_STATE_RESOURCE_GROUP` | Azure Resource Group containing the TF state storage account | `terraform-deploy`, `terraform-release`, `terraform-output-pipeline-ids` |
+| `TF_STATE_STORAGE_ACCOUNT` | Azure Storage Account name | same as above |
+| `TF_STATE_CONTAINER` | Blob container name within the storage account | same as above |
+| `TF_STATE_KEY` | Blob path/filename for the `.tfstate` file (e.g. `lakeflow-connect/terraform.tfstate`) | same as above |
+
+### Optional: GitHub Environments for Approval Gates
+
+The deploy and refresh workflows support human approval gates via [GitHub Environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment). To enable them:
+
+1. Create an environment named **`production-deploy`** (for Terraform apply) and/or **`production-refresh`** (for pipeline refresh jobs) under **Settings → Environments**.
+2. Add required reviewers to each environment.
+3. Uncomment the `environment:` block in the relevant workflow job (search for `# environment:` in the workflow files).
+
+> Approval gates require **GitHub Pro, Team, or Enterprise** for private repositories.
 
 ## YAML Configuration
 

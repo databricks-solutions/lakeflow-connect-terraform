@@ -1,0 +1,37 @@
+# Example partial backend configuration for `terraform init`.
+#
+# SECURITY: Keep this file to NON-SECRET values only (storage account names, blob
+# key path, flags). Do NOT put client_id, client_secret, or subscription IDs
+# here—those belong in environment variables so they are never committed.
+#
+# 1. Copy to `backend.local.tfvars` (gitignored via *.tfvars) and set the values below.
+# 2. Export the TF state SPN credentials in your shell (or load them from a secret
+#    store / CI — never check them into git). Recommended variable names:
+#      TF_STATE_ARM_CLIENT_ID
+#      TF_STATE_ARM_CLIENT_SECRET
+#      TF_STATE_ARM_SUBSCRIPTION_ID
+#      TF_STATE_ARM_TENANT_ID
+# 3. From `infra/`, run `terraform init` with the file PLUS explicit -backend-config
+#    flags that reference those variables (shell expands them — secrets stay out of files):
+#
+#      terraform init -reconfigure \
+#        -backend-config=backend.local.tfvars \
+#        -backend-config="client_id=${TF_STATE_ARM_CLIENT_ID}" \
+#        -backend-config="client_secret=${TF_STATE_ARM_CLIENT_SECRET}" \
+#        -backend-config="subscription_id=${TF_STATE_ARM_SUBSCRIPTION_ID}" \
+#        -backend-config="tenant_id=${TF_STATE_ARM_TENANT_ID}"
+#
+#    The azurerm backend also reads standard ARM_* variables if you prefer: you can
+#    temporarily export ARM_CLIENT_ID (etc.) to the TF state SPN, run init with only
+#    -backend-config=backend.local.tfvars, then replace ARM_* with the deploy SPN
+#    before plan/apply. Using TF_STATE_ARM_* + explicit -backend-config avoids mixing
+#    identities by mistake.
+#
+# 4. For plan/apply, set ARM_* / DATABRICKS_* to the deploy SPN (see README).
+
+# --- Azure Storage (state blob location — non-secret identifiers only) ---
+resource_group_name  = "<change_here>"
+storage_account_name = "<change_here>"
+container_name       = "<change_here>"
+key                  = "<change_here>"
+use_azuread_auth     = true
