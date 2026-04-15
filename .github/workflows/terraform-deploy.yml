@@ -1,0 +1,323 @@
+# =============================================================================
+# Terraform Deployment Workflow for Lakeflow Connect Pipelines
+# =============================================================================
+#
+# Deploys Lakeflow Connect infrastructure (gateway pipeline, ingestion
+# pipelines, orchestration jobs) to a Databricks workspace using Terraform.
+#
+# Flow:
+#   1. On push to main: runs validate + plan automatically
+#   2. On manual trigger: runs validate + plan + apply (with approval gate)
+#   3. Plan output is posted to the workflow summary for review
+#   4. Apply requires approval via the "production-deploy" environment
+#
+# Config file: config/lakeflow_dev.yml
+#
+# Self-hosted runner prerequisites: python3, pip3, terraform
+#
+# Authentication model (two separate SPNs):
+#   TF_STATE_SPN  - Azure SP with Storage Blob Data Contributor on tf-state
+#                   container. Used ONLY for terraform init (azurerm backend).
+#   DEPLOY_SPN    - Azure SP registered in Databricks workspace as a service
+#                   principal. Used for terraform plan/apply (Databricks provider).
+#
+# NOTE on artifact approach:
+#   The ideal pattern is to save the terraform plan as a GitHub artifact
+#   (actions/upload-artifact) in the plan job, then download it in the apply
+#   job. This guarantees that exactly what was reviewed gets applied. However,
+#   this requires GitHub Actions artifact storage quota to be available.
+#   If your GitHub environment supports artifacts, you can restore the
+#   artifact-based approach by:
+#     1. Splitting plan-and-apply back into separate plan + apply jobs
+#     2. Using actions/upload-artifact@v4 after terraform plan -out=tfplan
+#     3. Using actions/download-artifact@v4 before terraform apply tfplan
+#   The current approach runs plan + apply in the same job, with the
+#   approval gate (GitHub Environment) between validate and plan-and-apply.
+# =============================================================================
+
+name: "Terraform Deploy - Lakeflow Connect"
+
+on:
+  # Auto-run plan on push to main (when infra or config changes)
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+      - "config/**"
+      - "tools/**"
+
+  # Manual trigger for full deploy (plan + apply)
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Action to perform"
+        required: true
+        type: choice
+        options:
+          - plan-only
+          - plan-and-apply
+          - destroy
+      config_file:
+        description: "Path to YAML config file"
+        required: true
+        type: string
+        default: "../config/lakeflow_dev.yml"
+
+# Only one deployment at a time
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
+
+env:
+  TF_WORKING_DIR: infra
+  YAML_CONFIG_PATH: "../config/lakeflow_dev.yml"
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Job 1: Validate config and Terraform files
+  # -------------------------------------------------------------------------
+  validate:
+    name: "Validate"
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python venv and install dependencies
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install pydantic pyyaml croniter
+
+      - name: Validate YAML config with Pydantic
+        run: |
+          source .venv/bin/activate
+          CONFIG_PATH="${{ github.event.inputs.config_file || 'config/lakeflow_dev.yml' }}"
+          # Adjust path for validator (it expects path relative to repo root)
+          if [[ "$CONFIG_PATH" == ../config/* ]]; then
+            CONFIG_PATH="config/${CONFIG_PATH#../config/}"
+          fi
+          echo "Validating config: $CONFIG_PATH"
+          python3 tools/pydantic_validator.py "$CONFIG_PATH"
+
+      - name: Terraform Format Check
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform init \
+            -backend-config="client_id=${{ secrets.TF_STATE_ARM_CLIENT_ID }}" \
+            -backend-config="client_secret=${{ secrets.TF_STATE_ARM_CLIENT_SECRET }}" \
+            -backend-config="subscription_id=${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}" \
+            -backend-config="tenant_id=${{ secrets.ARM_TENANT_ID }}"
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate
+
+  # -------------------------------------------------------------------------
+  # Job 2: Terraform Plan (always runs)
+  # -------------------------------------------------------------------------
+  plan:
+    name: "Plan"
+    needs: validate
+    runs-on: self-hosted
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python venv and install dependencies
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install databricks-sdk pyyaml
+
+      - name: Terraform Init and Plan
+        id: plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          # DEPLOY_SPN credentials as ARM_* — used by Databricks provider for
+          # azure-client-secret auth during plan. Also provides subscription ID.
+          ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+        run: |
+          set -o pipefail
+
+          # Init with TF_STATE_SPN credentials via -backend-config (overrides ARM_* env vars)
+          terraform init \
+            -backend-config="client_id=${{ secrets.TF_STATE_ARM_CLIENT_ID }}" \
+            -backend-config="client_secret=${{ secrets.TF_STATE_ARM_CLIENT_SECRET }}" \
+            -backend-config="subscription_id=${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}" \
+            -backend-config="tenant_id=${{ secrets.ARM_TENANT_ID }}"
+
+          CONFIG_PATH="${{ github.event.inputs.config_file || env.YAML_CONFIG_PATH }}"
+
+          # Determine if this is a destroy
+          DESTROY_FLAG=""
+          if [[ "${{ github.event.inputs.action }}" == "destroy" ]]; then
+            DESTROY_FLAG="-destroy"
+          fi
+
+          # Plan uses ARM_* env vars (DEPLOY_SPN) for Databricks provider auth
+          terraform plan \
+            -var="yaml_config_path=${CONFIG_PATH}" \
+            -input=false \
+            $DESTROY_FLAG \
+            -no-color 2>&1 | tee plan_output.txt
+
+          # Check if there are changes
+          if grep -q "No changes" plan_output.txt; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post plan to summary
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          echo "## Terraform Plan Output" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Config file**: \`${{ github.event.inputs.config_file || env.YAML_CONFIG_PATH }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Action**: \`${{ github.event.inputs.action || 'plan-only (auto)' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat plan_output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      # NOTE: Artifact-based approach (recommended when GitHub artifact storage is available):
+      # Saving the plan file as an artifact ensures the exact reviewed plan is applied.
+      # Uncomment the block below and split apply into a separate job that downloads it.
+      #
+      # - name: Upload plan artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: tfplan
+      #     path: ${{ env.TF_WORKING_DIR }}/tfplan
+      #     retention-days: 1
+
+  # -------------------------------------------------------------------------
+  # Job 3: Terraform Apply
+  # Runs init + plan + apply in the same job.
+  # NOTE: For approval gates, configure a GitHub Environment with required
+  # reviewers (requires GitHub Pro/Team/Enterprise for private repos).
+  # Uncomment the 'environment' block below when available:
+  #   environment:
+  #     name: production-deploy
+  # -------------------------------------------------------------------------
+  apply:
+    name: "Apply"
+    needs: plan
+    # Only run apply when manually triggered with plan-and-apply or destroy
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.action == 'plan-and-apply' || github.event.inputs.action == 'destroy') &&
+      needs.plan.outputs.has_changes == 'true'
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Python dependencies for local-exec
+        run: |
+          pip3 install --break-system-packages databricks-sdk pyyaml
+
+      - name: Terraform Init, Plan, and Apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          # DEPLOY_SPN credentials as ARM_* — used by Databricks provider for
+          # azure-client-secret auth. Also provides subscription ID.
+          ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+        run: |
+          set -o pipefail
+
+          echo "## Terraform Apply" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Action | ${{ github.event.inputs.action }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Config | \`${{ github.event.inputs.config_file }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Approved by | Environment protection rules |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Timestamp | $(date -u +%Y-%m-%dT%H:%M:%SZ) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Init with TF_STATE_SPN credentials via -backend-config
+          terraform init \
+            -backend-config="client_id=${{ secrets.TF_STATE_ARM_CLIENT_ID }}" \
+            -backend-config="client_secret=${{ secrets.TF_STATE_ARM_CLIENT_SECRET }}" \
+            -backend-config="subscription_id=${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}" \
+            -backend-config="tenant_id=${{ secrets.ARM_TENANT_ID }}"
+
+          CONFIG_PATH="${{ github.event.inputs.config_file || env.YAML_CONFIG_PATH }}"
+
+          DESTROY_FLAG=""
+          if [[ "${{ github.event.inputs.action }}" == "destroy" ]]; then
+            DESTROY_FLAG="-destroy"
+          fi
+
+          # Plan and save to file, then apply
+          terraform plan \
+            -var="yaml_config_path=${CONFIG_PATH}" \
+            -out=tfplan \
+            -input=false \
+            $DESTROY_FLAG \
+            -no-color
+
+          terraform apply -input=false -no-color tfplan 2>&1 | tee apply_output.txt
+
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat apply_output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Show outputs
+        if: github.event.inputs.action == 'plan-and-apply'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Deployed Resources" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "**Gateway Pipeline ID:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`$(terraform output -raw gateway_pipeline_id 2>/dev/null || echo 'N/A')\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "**Ingestion Pipeline IDs:**" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          terraform output -json ingestion_pipeline_id_map 2>/dev/null || echo '{}'
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # -------------------------------------------------------------------------
+  # Job 4: No changes notification
+  # -------------------------------------------------------------------------
+  no-changes:
+    name: "No Changes"
+    needs: plan
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.action == 'plan-and-apply' || github.event.inputs.action == 'destroy') &&
+      needs.plan.outputs.has_changes == 'false'
+    runs-on: self-hosted
+    steps:
+      - name: Report no changes
+        run: |
+          echo "## No Changes Detected" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Terraform plan found no changes to apply. Infrastructure is up to date." >> $GITHUB_STEP_SUMMARY

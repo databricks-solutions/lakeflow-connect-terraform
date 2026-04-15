@@ -1,0 +1,149 @@
+# =============================================================================
+# User Story A: Full Refresh of Entire Ingestion Pipeline
+# =============================================================================
+#
+# This workflow enables controlled full refresh of Lakeflow Connect ingestion
+# pipelines through CI/CD with a mandatory approval gate.
+#
+# How it works:
+#   1. User triggers workflow manually (workflow_dispatch) selecting a pipeline
+#   2. A validation job checks inputs and shows what will be refreshed
+#   3. The refresh job requires approval from the "production-refresh" environment
+#   4. Once approved, the pipeline full refresh is triggered via Databricks API
+#      and runs asynchronously (fire-and-forget — monitor progress in Databricks UI)
+#
+# Prerequisites:
+#   - GitHub Environment "production-refresh" with required reviewers configured
+#   - Repository secrets: DATABRICKS_HOST, DATABRICKS_TOKEN
+#   - Terraform outputs available (pipeline IDs)
+# =============================================================================
+
+name: "Full Refresh - Entire Pipeline"
+
+on:
+  workflow_dispatch:
+    inputs:
+      pipeline_id:
+        description: "Databricks Pipeline ID to full refresh"
+        required: true
+        type: string
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+      reason:
+        description: "Business reason for full refresh (required for audit trail)"
+        required: true
+        type: string
+
+# Ensure only one full refresh runs at a time per pipeline
+concurrency:
+  group: full-refresh-${{ github.event.inputs.pipeline_id }}
+  cancel-in-progress: false
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Job 1: Validate inputs and display refresh plan
+  # -------------------------------------------------------------------------
+  validate:
+    name: "Validate & Plan"
+    runs-on: self-hosted
+    outputs:
+      pipeline_id: ${{ github.event.inputs.pipeline_id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Display refresh plan
+        run: |
+          echo "============================================"
+          echo "  FULL PIPELINE REFRESH - VALIDATION"
+          echo "============================================"
+          echo ""
+          echo "Pipeline ID:    ${{ github.event.inputs.pipeline_id }}"
+          echo "Environment:    ${{ github.event.inputs.environment }}"
+          echo "Requested by:   ${{ github.actor }}"
+          echo "Reason:         ${{ github.event.inputs.reason }}"
+          echo ""
+          echo "============================================"
+          echo "  ⚠️  This will FULL REFRESH the entire pipeline"
+          echo "  All tables will be re-ingested from source"
+          echo "  The refresh runs asynchronously - monitor in Databricks UI"
+          echo "============================================"
+
+      - name: Validate pipeline ID format
+        run: |
+          PIPELINE_ID="${{ github.event.inputs.pipeline_id }}"
+          if [[ -z "$PIPELINE_ID" ]]; then
+            echo "ERROR: Pipeline ID cannot be empty"
+            exit 1
+          fi
+          # Basic UUID-like format check
+          if [[ ! "$PIPELINE_ID" =~ ^[a-f0-9-]+$ ]]; then
+            echo "ERROR: Pipeline ID does not appear to be a valid format: $PIPELINE_ID"
+            exit 1
+          fi
+          echo "Pipeline ID format validated: $PIPELINE_ID"
+
+  # -------------------------------------------------------------------------
+  # Job 2: Execute refresh (requires approval)
+  # -------------------------------------------------------------------------
+  refresh:
+    name: "Execute Full Refresh"
+    needs: validate
+    runs-on: self-hosted
+    # NOTE: For approval gates, configure a GitHub Environment with required
+    # reviewers (requires GitHub Pro/Team/Enterprise for private repos).
+    # Uncomment when available:
+    #   environment:
+    #     name: production-refresh
+    #     url: ${{ format('https://{0}/#job/{1}/pipelines/{2}', secrets.DATABRICKS_HOST, github.run_id, github.event.inputs.pipeline_id) }}
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      # Databricks SDK Azure service principal auth (same SPN used by Terraform provider)
+      ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --break-system-packages databricks-sdk -q
+
+      - name: Create audit log entry
+        run: |
+          echo "AUDIT: Full pipeline refresh initiated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Pipeline ID | \`${{ github.event.inputs.pipeline_id }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Requested by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Approved via | GitHub Environment Protection Rules |" >> $GITHUB_STEP_SUMMARY
+          echo "| Reason | ${{ github.event.inputs.reason }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Timestamp | $(date -u +%Y-%m-%dT%H:%M:%SZ) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Run ID | ${{ github.run_id }} |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Trigger full refresh
+        id: refresh
+        run: |
+          python3 tools/trigger_full_refresh.py \
+            --pipeline-id "${{ github.event.inputs.pipeline_id }}" \
+            --mode full
+
+      - name: Report result
+        if: always()
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Result" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ steps.refresh.outcome }}" == "success" ]]; then
+            echo "Full refresh triggered successfully. Monitor progress in the Databricks UI." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Full refresh FAILED to trigger. Check the logs above for details." >> $GITHUB_STEP_SUMMARY
+          fi

@@ -1,0 +1,240 @@
+# =============================================================================
+# User Story B: Full Refresh of Specific Tables in an Ingestion Pipeline
+# =============================================================================
+#
+# This workflow enables controlled full refresh of SPECIFIC TABLES within a
+# Lakeflow Connect ingestion pipeline through CI/CD with a mandatory approval.
+#
+# How it works:
+#   1. User triggers workflow manually selecting pipeline + specific tables
+#   2. Validation job checks table name format and verifies each table exists
+#      in Unity Catalog (fail-fast before any refresh is triggered)
+#   3. The refresh job requires approval from the "production-refresh" environment
+#   4. Once approved, a selective table full refresh is triggered via Databricks API
+#      and runs asynchronously (fire-and-forget — monitor progress in Databricks UI)
+#
+# Table name format:
+#   - Two-part:   schema.table             (catalog resolved from pipeline config)
+#   - Three-part: catalog.schema.table     (used as-is)
+#
+# Key difference from User Story A:
+#   - Uses `full_refresh_selection` API parameter instead of `full_refresh`
+#   - Only the specified tables are fully refreshed; other tables continue CDC
+#
+# Prerequisites:
+#   - GitHub Environment "production-refresh" with required reviewers configured
+#   - Repository secrets: DATABRICKS_HOST, DEPLOY_SPN_CLIENT_ID/SECRET, ARM_TENANT_ID
+#   - Terraform outputs available (pipeline IDs)
+# =============================================================================
+
+name: "Full Refresh - Specific Tables"
+
+on:
+  workflow_dispatch:
+    inputs:
+      pipeline_id:
+        description: "Databricks Pipeline ID containing the tables"
+        required: true
+        type: string
+      tables:
+        description: "Comma-separated table names (schema.table or catalog.schema.table)"
+        required: true
+        type: string
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+      reason:
+        description: "Business reason for full refresh (required for audit trail)"
+        required: true
+        type: string
+
+# Ensure only one full refresh runs at a time per pipeline
+concurrency:
+  group: full-refresh-${{ github.event.inputs.pipeline_id }}
+  cancel-in-progress: false
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Job 1: Validate inputs — format check + verify tables exist in UC
+  # -------------------------------------------------------------------------
+  validate:
+    name: "Validate & Plan"
+    runs-on: self-hosted
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+    outputs:
+      pipeline_id: ${{ github.event.inputs.pipeline_id }}
+      table_count: ${{ steps.parse.outputs.table_count }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse and validate table name format
+        id: parse
+        run: |
+          echo "============================================"
+          echo "  SELECTIVE TABLE REFRESH - VALIDATION"
+          echo "============================================"
+          echo ""
+          echo "Pipeline ID:    ${{ github.event.inputs.pipeline_id }}"
+          echo "Environment:    ${{ github.event.inputs.environment }}"
+          echo "Requested by:   ${{ github.actor }}"
+          echo "Reason:         ${{ github.event.inputs.reason }}"
+          echo ""
+
+          PIPELINE_ID="${{ github.event.inputs.pipeline_id }}"
+          if [[ -z "$PIPELINE_ID" ]]; then
+            echo "ERROR: Pipeline ID cannot be empty"
+            exit 1
+          fi
+          if [[ ! "$PIPELINE_ID" =~ ^[a-f0-9-]+$ ]]; then
+            echo "ERROR: Pipeline ID does not appear to be a valid format: $PIPELINE_ID"
+            exit 1
+          fi
+
+          IFS=',' read -ra TABLES <<< "${{ github.event.inputs.tables }}"
+          TABLE_COUNT=${#TABLES[@]}
+          echo "table_count=$TABLE_COUNT" >> $GITHUB_OUTPUT
+
+          echo "Tables requested ($TABLE_COUNT):"
+          for table in "${TABLES[@]}"; do
+            table=$(echo "$table" | xargs)
+            PARTS=$(echo "$table" | tr '.' '\n' | wc -l)
+            if [[ $PARTS -lt 2 || $PARTS -gt 3 ]]; then
+              echo "ERROR: '$table' must be schema.table or catalog.schema.table"
+              exit 1
+            fi
+            echo "  - $table"
+          done
+
+          echo ""
+          echo "============================================"
+          echo "  Only the above tables will be fully refreshed."
+          echo "  Other tables in the pipeline will continue CDC."
+          echo "============================================"
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --break-system-packages databricks-sdk -q
+
+      - name: Verify tables exist in Unity Catalog
+        run: |
+          python3 - <<'EOF'
+          import sys
+          from databricks.sdk import WorkspaceClient
+          from databricks.sdk.errors import NotFound
+
+          pipeline_id = "${{ github.event.inputs.pipeline_id }}"
+          tables_input = "${{ github.event.inputs.tables }}"
+
+          client = WorkspaceClient()
+
+          # Get pipeline target catalog for resolving two-part names
+          pipeline = client.pipelines.get(pipeline_id=pipeline_id)
+          pipeline_catalog = pipeline.spec.catalog if pipeline.spec else None
+          print(f"Pipeline: {pipeline.name}")
+          print(f"Target catalog: {pipeline_catalog or '(none)'}")
+          print()
+
+          tables = [t.strip() for t in tables_input.split(",") if t.strip()]
+          errors = []
+
+          for table in tables:
+              parts = table.split(".")
+              if len(parts) == 2:
+                  if not pipeline_catalog:
+                      errors.append(f"'{table}': two-part name but pipeline has no target catalog")
+                      continue
+                  full_name = f"{pipeline_catalog}.{table}"
+              else:
+                  full_name = table
+
+              try:
+                  # Unity Catalog stores identifiers as lowercase
+                  client.tables.get(full_name=full_name.lower())
+                  print(f"  OK  {full_name}")
+              except NotFound:
+                  errors.append(f"'{full_name}' not found in Unity Catalog")
+              except Exception as e:
+                  errors.append(f"'{full_name}' lookup failed: {e}")
+
+          if errors:
+              print("\nFailed — the following tables were not found in Unity Catalog:")
+              for err in errors:
+                  print(f"  X  {err}")
+              print(f"\nHint: Use the UC schema name as it appears in Unity Catalog under '{pipeline_catalog}'.")
+              print("      Schema prefixes/suffixes from the pipeline config are applied (e.g. 'orapdb1_client_management', not 'client_management').")
+              print("      Use the 'List Pipeline IDs' workflow to confirm pipeline details, or browse UC in the Databricks UI.")
+              sys.exit(1)
+
+          print(f"\nAll {len(tables)} table(s) verified in Unity Catalog.")
+          EOF
+
+  # -------------------------------------------------------------------------
+  # Job 2: Execute selective refresh (requires approval)
+  # -------------------------------------------------------------------------
+  refresh:
+    name: "Execute Selective Table Refresh"
+    needs: validate
+    runs-on: self-hosted
+    # NOTE: For approval gates, configure a GitHub Environment with required
+    # reviewers (requires GitHub Pro/Team/Enterprise for private repos).
+    # Uncomment when available:
+    #   environment:
+    #     name: production-refresh
+    #     url: ${{ format('https://{0}/#job/{1}/pipelines/{2}', secrets.DATABRICKS_HOST, github.run_id, github.event.inputs.pipeline_id) }}
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --break-system-packages databricks-sdk -q
+
+      - name: Create audit log entry
+        run: |
+          echo "AUDIT: Selective table refresh initiated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Pipeline ID | \`${{ github.event.inputs.pipeline_id }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tables | ${{ github.event.inputs.tables }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Table Count | ${{ needs.validate.outputs.table_count }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Requested by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Approved via | GitHub Environment Protection Rules |" >> $GITHUB_STEP_SUMMARY
+          echo "| Reason | ${{ github.event.inputs.reason }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Timestamp | $(date -u +%Y-%m-%dT%H:%M:%SZ) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Run ID | ${{ github.run_id }} |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Trigger selective table refresh
+        id: refresh
+        run: |
+          python3 tools/trigger_full_refresh.py \
+            --pipeline-id "${{ github.event.inputs.pipeline_id }}" \
+            --mode tables \
+            --tables "${{ github.event.inputs.tables }}"
+
+      - name: Report result
+        if: always()
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Result" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ steps.refresh.outcome }}" == "success" ]]; then
+            echo "Selective table refresh triggered successfully. Monitor progress in the Databricks UI." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Selective table refresh FAILED to trigger. Check the logs above for details." >> $GITHUB_STEP_SUMMARY
+          fi

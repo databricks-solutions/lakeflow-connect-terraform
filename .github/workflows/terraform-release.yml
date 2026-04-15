@@ -1,0 +1,321 @@
+# =============================================================================
+# Terraform Release Workflow — Tag-Triggered Plan + Apply
+# =============================================================================
+#
+# Deploys Lakeflow Connect infrastructure via a full Terraform plan-and-apply
+# cycle, triggered automatically when a semver tag is pushed to the tip of main.
+#
+# Trigger:
+#   Push a tag matching v<major>.<minor>.<patch> (e.g. v1.0.0) while the tagged
+#   commit IS the current HEAD of main.  A guard step aborts the run if the tag
+#   points at any other commit, preventing accidental deploys from old history.
+#
+# Flow:
+#   1. validate   — Pydantic config check + terraform fmt/init/validate
+#   2. plan       — terraform plan, output posted to workflow summary
+#   3. apply      — terraform plan -out=tfplan → apply tfplan (same job,
+#                   so the exact reviewed plan is what gets applied)
+#   4. no-changes — informational job when plan finds nothing to do
+#
+# Rollback to an older release:
+# -----------------------------------------------------------------------
+#   IMPORTANT: The guard step enforces that a tag must point at the tip
+#   of main. You CANNOT roll back by tagging an old commit — the guard
+#   will abort the run. Instead, use one of the approaches below.
+#
+#   Option A — Git revert on main (recommended, keeps history clean):
+#     1. Identify the commit(s) to undo:
+#            git log --oneline --decorate origin/main
+#     2. Revert them — this creates a NEW commit on main:
+#            git revert <bad-sha>..HEAD   # range, or a single SHA
+#            git push origin main
+#     3. Tag the new tip of main with the next semver:
+#            git tag v1.0.2
+#            git push origin v1.0.2
+#        The guard passes (tag = new tip of main). Terraform computes
+#        the diff from current deployed state to the reverted config
+#        and converges. History stays linear and auditable.
+#
+#   Option B — Manual workflow_dispatch on terraform-deploy.yml:
+#     Bypass the tag flow entirely.
+#     1. Create a branch from the old tag you want to redeploy:
+#            git checkout -b rollback/v1.0.0 v1.0.0
+#            git push origin rollback/v1.0.0
+#     2. In GitHub: Actions → Terraform Deploy → Run workflow,
+#        select action=plan-and-apply. This runs against that branch's
+#        config with no guard involved.
+#
+#   In both cases Terraform computes a diff from current deployed state
+#   to the desired older state and converges to it. No manual state
+#   manipulation is required.
+# -----------------------------------------------------------------------
+#
+# Config file: config/lakeflow_dev.yml
+#
+# Authentication model (two separate SPNs):
+#   TF_STATE_SPN  - Azure SP with Storage Blob Data Contributor on tf-state
+#                   container. Used ONLY for terraform init (azurerm backend).
+#   DEPLOY_SPN    - Azure SP registered in Databricks workspace as a service
+#                   principal. Used for terraform plan/apply (Databricks provider).
+# =============================================================================
+
+name: "Terraform Release - Tag Triggered"
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+# Only one release deploy at a time — never cancel in progress
+concurrency:
+  group: terraform-release
+  cancel-in-progress: false
+
+env:
+  TF_WORKING_DIR: infra
+  YAML_CONFIG_PATH: "../config/lakeflow_dev.yml"
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Job 1: Guard — ensure the tag points at the tip of main
+  # -------------------------------------------------------------------------
+  guard:
+    name: "Guard: Tag must be tip of main"
+    runs-on: self-hosted
+    outputs:
+      tag_version: ${{ steps.meta.outputs.tag_version }}
+    steps:
+      - name: Checkout repository (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag is on tip of main
+        id: meta
+        run: |
+          TAG_SHA=$(git rev-parse "${{ github.ref }}")
+          MAIN_SHA=$(git rev-parse origin/main)
+
+          echo "Tagged commit : $TAG_SHA"
+          echo "Tip of main   : $MAIN_SHA"
+          echo "Tag name      : ${{ github.ref_name }}"
+
+          if [[ "$TAG_SHA" != "$MAIN_SHA" ]]; then
+            echo ""
+            echo "ERROR: Tag ${{ github.ref_name }} points at $TAG_SHA"
+            echo "       but origin/main is at $MAIN_SHA."
+            echo "       Release tags must be placed on the tip of main."
+            echo "       Delete the tag and re-tag the correct commit."
+            exit 1
+          fi
+
+          echo "tag_version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          echo "Tag is on tip of main. Proceeding with release."
+
+  # -------------------------------------------------------------------------
+  # Job 2: Validate config and Terraform files
+  # -------------------------------------------------------------------------
+  validate:
+    name: "Validate"
+    needs: guard
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python venv and install dependencies
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install pydantic pyyaml croniter
+
+      - name: Validate YAML config with Pydantic
+        run: |
+          source .venv/bin/activate
+          echo "Validating config: config/lakeflow_dev.yml"
+          python3 tools/pydantic_validator.py "config/lakeflow_dev.yml"
+
+      - name: Terraform Format Check
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform init \
+            -backend-config="client_id=${{ secrets.TF_STATE_ARM_CLIENT_ID }}" \
+            -backend-config="client_secret=${{ secrets.TF_STATE_ARM_CLIENT_SECRET }}" \
+            -backend-config="subscription_id=${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}" \
+            -backend-config="tenant_id=${{ secrets.ARM_TENANT_ID }}"
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate
+
+  # -------------------------------------------------------------------------
+  # Job 3: Terraform Plan
+  # -------------------------------------------------------------------------
+  plan:
+    name: "Plan"
+    needs: [guard, validate]
+    runs-on: self-hosted
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python venv and install dependencies
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install databricks-sdk pyyaml
+
+      - name: Terraform Init and Plan
+        id: plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+        run: |
+          set -o pipefail
+
+          terraform init \
+            -backend-config="client_id=${{ secrets.TF_STATE_ARM_CLIENT_ID }}" \
+            -backend-config="client_secret=${{ secrets.TF_STATE_ARM_CLIENT_SECRET }}" \
+            -backend-config="subscription_id=${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}" \
+            -backend-config="tenant_id=${{ secrets.ARM_TENANT_ID }}"
+
+          terraform plan \
+            -var="yaml_config_path=${{ env.YAML_CONFIG_PATH }}" \
+            -input=false \
+            -no-color 2>&1 | tee plan_output.txt
+
+          if grep -q "No changes" plan_output.txt; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post plan to summary
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          echo "## Terraform Plan — Release ${{ needs.guard.outputs.tag_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Release tag | \`${{ needs.guard.outputs.tag_version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Config file | \`config/lakeflow_dev.yml\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat plan_output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # -------------------------------------------------------------------------
+  # Job 4: Terraform Apply (runs only when plan has changes)
+  # -------------------------------------------------------------------------
+  apply:
+    name: "Apply"
+    needs: [guard, plan]
+    if: needs.plan.outputs.has_changes == 'true'
+    runs-on: self-hosted
+    # NOTE: Uncomment the block below to add a human approval gate before apply.
+    # Requires a GitHub Environment named "production-deploy" with required reviewers
+    # configured (needs GitHub Pro/Team/Enterprise for private repos).
+    #   environment:
+    #     name: production-deploy
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Python dependencies for local-exec
+        run: |
+          pip3 install --break-system-packages databricks-sdk pyyaml
+
+      - name: Terraform Init, Plan, and Apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+        run: |
+          set -o pipefail
+
+          echo "## Terraform Apply — Release ${{ needs.guard.outputs.tag_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Release tag | \`${{ needs.guard.outputs.tag_version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Config file | \`config/lakeflow_dev.yml\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Timestamp | $(date -u +%Y-%m-%dT%H:%M:%SZ) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          terraform init \
+            -backend-config="client_id=${{ secrets.TF_STATE_ARM_CLIENT_ID }}" \
+            -backend-config="client_secret=${{ secrets.TF_STATE_ARM_CLIENT_SECRET }}" \
+            -backend-config="subscription_id=${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}" \
+            -backend-config="tenant_id=${{ secrets.ARM_TENANT_ID }}"
+
+          # Plan to file, then apply exactly that plan
+          terraform plan \
+            -var="yaml_config_path=${{ env.YAML_CONFIG_PATH }}" \
+            -out=tfplan \
+            -input=false \
+            -no-color
+
+          terraform apply -input=false -no-color tfplan 2>&1 | tee apply_output.txt
+
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat apply_output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Show deployed resource IDs
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Deployed Resources" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "**Gateway Pipeline ID:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`$(terraform output -raw gateway_pipeline_id 2>/dev/null || echo 'N/A')\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "**Ingestion Pipeline IDs:**" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          terraform output -json ingestion_pipeline_id_map 2>/dev/null || echo '{}'
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### GitHub Release" >> $GITHUB_STEP_SUMMARY
+          echo "Tag [\`${{ needs.guard.outputs.tag_version }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.guard.outputs.tag_version }}) deployed successfully." >> $GITHUB_STEP_SUMMARY
+
+  # -------------------------------------------------------------------------
+  # Job 5: No changes notification
+  # -------------------------------------------------------------------------
+  no-changes:
+    name: "No Changes"
+    needs: [guard, plan]
+    if: needs.plan.outputs.has_changes == 'false'
+    runs-on: self-hosted
+    steps:
+      - name: Report no changes
+        run: |
+          echo "## No Changes — Release ${{ needs.guard.outputs.tag_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Terraform plan found no infrastructure changes for tag \`${{ needs.guard.outputs.tag_version }}\`." >> $GITHUB_STEP_SUMMARY
+          echo "The deployed infrastructure already matches the configuration at this commit." >> $GITHUB_STEP_SUMMARY
