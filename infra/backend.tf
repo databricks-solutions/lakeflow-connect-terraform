@@ -1,14 +1,19 @@
 terraform {
-  # Uncomment below line for using local backend for state storage in local deployments . The state file will be stored locally at: infra/terraform.tfstate
-  backend "local" {}
-  
-  # For CI/CD deployments in production or for team collaboration, use remote backend
-  #backend "azurerm" {
-  #  resource_group_name  = "ps-west-europe"
-  #  storage_account_name = "pswesteuropestorage"
-  #  container_name       = "tf-state"
-  #  key                  = "lakeflow-connect-cicd-full-refresh-demo.tfstate"
-  #  use_azuread_auth     = true
-  #}
-  
+  # ---------------------------------------------------------------------------
+  # Backends: enable exactly ONE of the blocks below (uncomment one, comment the
+  # other). Terraform allows only a single backend block per configuration.
+  # ---------------------------------------------------------------------------
+
+  # Option A — Remote state (Recommended for teams / CI. Suitable for Production)
+  #   `azurerm` shown as example. Adapt to other remote backends as needed.
+  #   Intentionally set as Partial / "empty" backend
+  #   During `terraform init` pass along settings ( see README for more details)
+
+  backend "azurerm" {}
+
+  # Option B — Local filesystem state (legacy / single-user option for local state)
+  #   Uncomment `backend "local" {}` below, comment out `backend "azurerm" {}`,
+  #   then `terraform init`. State file path: infra/terraform.tfstate (relative to the working directory)
+
+  # backend "local" {}
 }

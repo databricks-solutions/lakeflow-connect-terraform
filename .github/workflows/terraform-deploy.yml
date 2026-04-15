@@ -21,6 +21,9 @@
 #   DEPLOY_SPN    - Azure SP registered in Databricks workspace as a service
 #                   principal. Used for terraform plan/apply (Databricks provider).
 #
+# Repository variables (azurerm partial backend — state blob location):
+#   TF_STATE_RESOURCE_GROUP, TF_STATE_STORAGE_ACCOUNT, TF_STATE_CONTAINER, TF_STATE_KEY
+#
 # NOTE on artifact approach:
 #   The ideal pattern is to save the terraform plan as a GitHub artifact
 #   (actions/upload-artifact) in the plan job, then download it in the apply
@@ -108,6 +111,11 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
           terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}" \
+            -backend-config="use_azuread_auth=true" \
             -backend-config="client_id=${{ secrets.TF_STATE_ARM_CLIENT_ID }}" \
             -backend-config="client_secret=${{ secrets.TF_STATE_ARM_CLIENT_SECRET }}" \
             -backend-config="subscription_id=${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}" \
@@ -152,6 +160,11 @@ jobs:
 
           # Init with TF_STATE_SPN credentials via -backend-config (overrides ARM_* env vars)
           terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}" \
+            -backend-config="use_azuread_auth=true" \
             -backend-config="client_id=${{ secrets.TF_STATE_ARM_CLIENT_ID }}" \
             -backend-config="client_secret=${{ secrets.TF_STATE_ARM_CLIENT_SECRET }}" \
             -backend-config="subscription_id=${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}" \
@@ -255,6 +268,11 @@ jobs:
 
           # Init with TF_STATE_SPN credentials via -backend-config
           terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}" \
+            -backend-config="use_azuread_auth=true" \
             -backend-config="client_id=${{ secrets.TF_STATE_ARM_CLIENT_ID }}" \
             -backend-config="client_secret=${{ secrets.TF_STATE_ARM_CLIENT_SECRET }}" \
             -backend-config="subscription_id=${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}" \
