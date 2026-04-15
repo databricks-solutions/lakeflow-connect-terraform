@@ -32,7 +32,9 @@ jobs:
     runs-on: self-hosted
     env:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

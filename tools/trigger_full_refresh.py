@@ -18,7 +18,8 @@ Usage:
 
 Requires:
   - DATABRICKS_HOST: Databricks workspace URL
-  - DATABRICKS_TOKEN: Databricks personal access token (or service principal token)
+  - ARM_CLIENT_ID, ARM_CLIENT_SECRET, ARM_TENANT_ID: Azure service principal credentials
+    (the Databricks SDK picks these up automatically for azure-client-secret auth)
 """
 
 import argparse

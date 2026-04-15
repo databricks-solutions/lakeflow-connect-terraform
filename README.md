@@ -340,6 +340,73 @@ poetry run terraform apply --var yaml_config_path=../config/lakeflow_<env>.yml
 
 **Note:** While `terraform plan` does not require `poetry run` (since the gateway validation Python script is executed only during `apply`), we recommend using `poetry run` for both `plan` and `apply` to provide a consistent workflow and environment.
 
+## GitHub Actions CI/CD Setup
+
+This repository ships with five GitHub Actions workflows that run on a **self-hosted runner** and automate the full deployment and refresh lifecycle.
+
+### Workflows Overview
+
+| Workflow file | Trigger | Purpose |
+|---------------|---------|---------|
+| `terraform-deploy.yml` | Push to `main` (auto plan) or `workflow_dispatch` | Validate → Plan → Apply (with optional approval gate) |
+| `terraform-release.yml` | Semver tag push (e.g. `v1.0.0`) | Tag-gated Validate → Plan → Apply; tag must be tip of `main` |
+| `terraform-output-pipeline-ids.yml` | `workflow_dispatch` | Read-only: list all pipeline IDs from Terraform state |
+| `full-refresh-pipeline.yml` | `workflow_dispatch` | Trigger a full refresh of an entire ingestion pipeline |
+| `full-refresh-tables.yml` | `workflow_dispatch` | Trigger a full refresh of specific tables within a pipeline |
+
+### Self-Hosted Runner Prerequisites
+
+All workflows use `runs-on: self-hosted`. The runner machine must have:
+
+- **Terraform** >= 1.10 available on `PATH`
+- **Python venv activated** — the workflows use `python` (not `python3`). Activate the project's Poetry-managed venv in the runner's startup shell so that `python`, `pip`, and all SDK dependencies resolve correctly:
+
+  ```bash
+  source /path/to/poetry/virtualenvs/lakeflow-connect-terraform-<hash>-py3.XX/bin/activate
+  ```
+
+  To find the venv path on your machine:
+  ```bash
+  poetry env list --full-path
+  ```
+
+### Required Repository Secrets
+
+Configure these under **Settings → Secrets and variables → Actions → Secrets**:
+
+| Secret | Description | Used by |
+|--------|-------------|---------|
+| `ARM_TENANT_ID` | Azure AD tenant ID — shared by both SPNs | All workflows |
+| `DATABRICKS_HOST` | Databricks workspace URL (e.g. `https://adb-xxx.azuredatabricks.net`) | All workflows |
+| `TF_STATE_ARM_CLIENT_ID` | Client ID of the **TF State SPN** — authenticates to Azure Blob backend | `terraform-deploy`, `terraform-release`, `terraform-output-pipeline-ids` |
+| `TF_STATE_ARM_CLIENT_SECRET` | Client secret of the TF State SPN | same as above |
+| `TF_STATE_ARM_SUBSCRIPTION_ID` | Azure subscription ID that contains the TF state storage account | same as above |
+| `DEPLOY_SPN_CLIENT_ID` | Client ID of the **Deploy SPN** — used by the Databricks Terraform provider and SDK | All workflows |
+| `DEPLOY_SPN_CLIENT_SECRET` | Client secret of the Deploy SPN | All workflows |
+
+> **Two-SPN model:** `TF_STATE_*` credentials authenticate only to Azure Blob Storage (Terraform state); they never touch Databricks. `DEPLOY_SPN_*` credentials are the Databricks-registered service principal used for `terraform plan/apply`, Databricks SDK calls, and reading Terraform state outputs — consistently across all workflows. No PAT tokens are used. See the [Terraform Backend section](#step-4-configure-terraform-backend) for the full explanation.
+
+### Required Repository Variables
+
+Configure these under **Settings → Secrets and variables → Actions → Variables**:
+
+| Variable | Description | Used by |
+|----------|-------------|---------|
+| `TF_STATE_RESOURCE_GROUP` | Azure Resource Group containing the TF state storage account | `terraform-deploy`, `terraform-release`, `terraform-output-pipeline-ids` |
+| `TF_STATE_STORAGE_ACCOUNT` | Azure Storage Account name | same as above |
+| `TF_STATE_CONTAINER` | Blob container name within the storage account | same as above |
+| `TF_STATE_KEY` | Blob path/filename for the `.tfstate` file (e.g. `lakeflow-connect/terraform.tfstate`) | same as above |
+
+### Optional: GitHub Environments for Approval Gates
+
+The deploy and refresh workflows support human approval gates via [GitHub Environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment). To enable them:
+
+1. Create an environment named **`production-deploy`** (for Terraform apply) and/or **`production-refresh`** (for pipeline refresh jobs) under **Settings → Environments**.
+2. Add required reviewers to each environment.
+3. Uncomment the `environment:` block in the relevant workflow job (search for `# environment:` in the workflow files).
+
+> Approval gates require **GitHub Pro, Team, or Enterprise** for private repositories.
+
 ## YAML Configuration
 
 See `config/examples/` for complete example configurations ([MySQL](config/examples/mysql.yml), [Oracle](config/examples/oracle.yml), [PostgreSQL](config/examples/postgresql.yml), [SQL Server](config/examples/sqlserver.yml)). The configuration is fully YAML-driven with the following main sections:

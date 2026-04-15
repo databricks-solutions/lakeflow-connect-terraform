@@ -14,7 +14,7 @@
 #
 # Prerequisites:
 #   - GitHub Environment "production-refresh" with required reviewers configured
-#   - Repository secrets: DATABRICKS_HOST, DATABRICKS_TOKEN
+#   - Repository secrets: DATABRICKS_HOST, DEPLOY_SPN_CLIENT_ID, DEPLOY_SPN_CLIENT_SECRET, ARM_TENANT_ID
 #   - Terraform outputs available (pipeline IDs)
 # =============================================================================
 
