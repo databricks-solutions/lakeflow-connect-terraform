@@ -114,7 +114,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python3 -m pip install --break-system-packages databricks-sdk -q
+          python -m pip install --break-system-packages databricks-sdk -q
 
       - name: Create audit log entry
         run: |
@@ -133,7 +133,7 @@ jobs:
       - name: Trigger full refresh
         id: refresh
         run: |
-          python3 tools/trigger_full_refresh.py \
+          python tools/trigger_full_refresh.py \
             --pipeline-id "${{ github.event.inputs.pipeline_id }}" \
             --mode full
 

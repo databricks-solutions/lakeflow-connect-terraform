@@ -68,7 +68,7 @@ jobs:
           echo "| Pipeline Key | Pipeline ID |" >> $GITHUB_STEP_SUMMARY
           echo "|-------------|-------------|" >> $GITHUB_STEP_SUMMARY
           terraform output -json ingestion_pipeline_id_map 2>/dev/null | \
-            python3 -c "
+            python -c "
           import json, sys
           data = json.load(sys.stdin)
           for key, pid in sorted(data.items()):

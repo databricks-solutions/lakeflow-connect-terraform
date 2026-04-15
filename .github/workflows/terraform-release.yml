@@ -128,7 +128,7 @@ jobs:
 
       - name: Set up Python venv and install dependencies
         run: |
-          python3 -m venv .venv
+          python -m venv .venv
           source .venv/bin/activate
           pip install pydantic pyyaml croniter
 
@@ -136,7 +136,7 @@ jobs:
         run: |
           source .venv/bin/activate
           echo "Validating config: config/lakeflow_dev.yml"
-          python3 tools/pydantic_validator.py "config/lakeflow_dev.yml"
+          python tools/pydantic_validator.py "config/lakeflow_dev.yml"
 
       - name: Terraform Format Check
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -175,7 +175,7 @@ jobs:
 
       - name: Set up Python venv and install dependencies
         run: |
-          python3 -m venv .venv
+          python -m venv .venv
           source .venv/bin/activate
           pip install databricks-sdk pyyaml
 

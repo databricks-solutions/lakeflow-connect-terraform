@@ -13,7 +13,7 @@
 #
 # Config file: config/lakeflow_dev.yml
 #
-# Self-hosted runner prerequisites: python3, pip3, terraform
+# Self-hosted runner prerequisites: python, pip3, terraform
 #
 # Authentication model (two separate SPNs):
 #   TF_STATE_SPN  - Azure SP with Storage Blob Data Contributor on tf-state
@@ -88,7 +88,7 @@ jobs:
 
       - name: Set up Python venv and install dependencies
         run: |
-          python3 -m venv .venv
+          python -m venv .venv
           source .venv/bin/activate
           pip install pydantic pyyaml croniter
 
@@ -101,7 +101,7 @@ jobs:
             CONFIG_PATH="config/${CONFIG_PATH#../config/}"
           fi
           echo "Validating config: $CONFIG_PATH"
-          python3 tools/pydantic_validator.py "$CONFIG_PATH"
+          python tools/pydantic_validator.py "$CONFIG_PATH"
 
       - name: Terraform Format Check
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -140,7 +140,7 @@ jobs:
 
       - name: Set up Python venv and install dependencies
         run: |
-          python3 -m venv .venv
+          python -m venv .venv
           source .venv/bin/activate
           pip install databricks-sdk pyyaml
 

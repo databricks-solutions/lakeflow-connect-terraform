@@ -123,11 +123,11 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python3 -m pip install --break-system-packages databricks-sdk -q
+          python -m pip install --break-system-packages databricks-sdk -q
 
       - name: Verify tables exist in Unity Catalog
         run: |
-          python3 - <<'EOF'
+          python - <<'EOF'
           import sys
           from databricks.sdk import WorkspaceClient
           from databricks.sdk.errors import NotFound
@@ -202,7 +202,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python3 -m pip install --break-system-packages databricks-sdk -q
+          python -m pip install --break-system-packages databricks-sdk -q
 
       - name: Create audit log entry
         run: |
@@ -223,7 +223,7 @@ jobs:
       - name: Trigger selective table refresh
         id: refresh
         run: |
-          python3 tools/trigger_full_refresh.py \
+          python tools/trigger_full_refresh.py \
             --pipeline-id "${{ github.event.inputs.pipeline_id }}" \
             --mode tables \
             --tables "${{ github.event.inputs.tables }}"
