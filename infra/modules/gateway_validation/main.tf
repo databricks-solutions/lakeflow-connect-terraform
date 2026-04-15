@@ -6,7 +6,7 @@ variable "pipeline_id" {
 variable "timeout_minutes" {
   description = "Timeout in minutes for validation (minimum 15)"
   type        = number
-  
+
   validation {
     condition     = var.timeout_minutes >= 15
     error_message = "Timeout must be at least 15 minutes."
@@ -16,7 +16,7 @@ variable "timeout_minutes" {
 variable "check_interval_seconds" {
   description = "Check interval in seconds (minimum 5)"
   type        = number
-  
+
   validation {
     condition     = var.check_interval_seconds >= 5
     error_message = "Check interval must be at least 5 seconds."
@@ -48,7 +48,7 @@ resource "null_resource" "gateway_validation" {
     interval    = var.check_interval_seconds
     config_hash = filemd5(var.yaml_config_path) # Hash of YAML config ensures idempotency - only triggers when config changes
   }
-  
+
   # The Python program instantiates Databricks SDK Workspace client and relies on environment variables for authentication. E.g DATABRICKS_HOST and DATABRICKS_AUTH_TYPE
   provisioner "local-exec" {
     command = length(var.ingestion_pipeline_ids) > 0 ? "python ${var.python_script_path} --pipeline-id ${var.pipeline_id} --timeout ${var.timeout_minutes} --check-interval ${var.check_interval_seconds} --ingestion-pipeline-ids ${join(" ", var.ingestion_pipeline_ids)}" : "python ${var.python_script_path} --pipeline-id ${var.pipeline_id} --timeout ${var.timeout_minutes} --check-interval ${var.check_interval_seconds}"
