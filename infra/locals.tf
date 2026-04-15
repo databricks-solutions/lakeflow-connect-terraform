@@ -17,7 +17,7 @@ locals {
   # Unity Catalog configuration with validation
   # global_uc_catalog is required - if not provided, set to null to force Terraform error
   global_uc_catalog = try(local.cfg.unity_catalog.global_uc_catalog, null)
-  
+
   # staging_uc_catalog defaults to global_uc_catalog if not provided
   # If global_uc_catalog is also null, this will be null and cause an error
   staging_uc_catalog = try(
@@ -46,7 +46,7 @@ locals {
         catalog = try(t.destination_catalog, pair.uc_catalog)
         schema  = try(t.destination_schema, pair.destination_schema)
       }
-    ] : [
+      ] : [
       { catalog = pair.uc_catalog, schema = pair.destination_schema }
     ]
   ]))
@@ -64,7 +64,7 @@ locals {
       for i, schema in db.schemas : {
         database_name        = db.name
         schema_name          = schema.name
-        pair_key             = local.is_mysql ? "${db.name}_schema_${i}" : "${db.name}_${schema.name}"   # For MySQL, concept of schema does not exist, hence handling through arbitrary index
+        pair_key             = local.is_mysql ? "${db.name}_schema_${i}" : "${db.name}_${schema.name}" # For MySQL, concept of schema does not exist, hence handling through arbitrary index
         use_schema_ingestion = try(schema.use_schema_ingestion, true)
         specific_tables      = try(schema.tables, [])
         # For PostgreSQL: Pass replication slot and publication info if present
@@ -78,7 +78,7 @@ locals {
           try(db.schema_prefix, ""),
           db.name,
           try(db.schema_suffix, "")
-        ]) : join("", [
+          ]) : join("", [
           try(db.schema_prefix, ""),
           schema.name,
           try(db.schema_suffix, "")
@@ -104,7 +104,7 @@ locals {
   # Parse per-database job schedules when common_job_for_all_pipelines is false
   # Create a map of database names to their schedule configurations
   per_database_schedules = try(local.cfg.job.per_database_schedules, [])
-  
+
   # Create a flattened map: database_name -> schedule_config
   database_to_schedule = merge([
     for schedule_config in local.per_database_schedules : {

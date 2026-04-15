@@ -36,18 +36,18 @@ variable "source_type" {
 variable "specific_tables" {
   description = "List of specific tables to ingest instead of entire schema"
   type = list(object({
-    source_table          = string
-    destination_table     = optional(string) # Optional: if not provided, uses source_table
-    destination_catalog   = optional(string)  # Optional: if not provided, uses pipeline-level destination_catalog
-    destination_schema    = optional(string)  # Optional: if not provided, uses pipeline-level destination_schema
+    source_table        = string
+    destination_table   = optional(string) # Optional: if not provided, uses source_table
+    destination_catalog = optional(string) # Optional: if not provided, uses pipeline-level destination_catalog
+    destination_schema  = optional(string) # Optional: if not provided, uses pipeline-level destination_schema
   }))
   default = []
 }
 
 variable "use_schema_ingestion" {
   description = "Whether to ingest entire schema or specific tables"
-  type = bool
-  default = true
+  type        = bool
+  default     = true
 }
 
 variable "source_configurations" {
@@ -71,7 +71,7 @@ resource "databricks_pipeline" "ingest" {
   ingestion_definition {
     source_type          = var.source_type
     ingestion_gateway_id = var.gateway_pipeline_id
-    
+
     # Use schema ingestion when use_schema_ingestion is true
     dynamic "objects" {
       for_each = var.use_schema_ingestion ? [1] : []
@@ -84,7 +84,7 @@ resource "databricks_pipeline" "ingest" {
         }
       }
     }
-    
+
     # Use table-level ingestion for specific tables only when use_schema_ingestion is false
     dynamic "objects" {
       for_each = !var.use_schema_ingestion ? var.specific_tables : []
@@ -99,7 +99,7 @@ resource "databricks_pipeline" "ingest" {
         }
       }
     }
-    
+
     # PostgreSQL-specific: source_configurations for replication slot and publication (Public Preview)
     # Only added when source_type is POSTGRESQL and source_configurations are provided
     dynamic "source_configurations" {

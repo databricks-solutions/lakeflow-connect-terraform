@@ -37,10 +37,10 @@ variable "connection_parameters" {
 variable "cluster" {
   description = "Cluster configuration for the gateway pipeline"
   type = object({
-    label                        = string
-    node_type_id                 = string
-    driver_node_type_id          = optional(string)
-    num_workers                  = optional(number)
+    label               = string
+    node_type_id        = string
+    driver_node_type_id = optional(string)
+    num_workers         = optional(number)
     autoscale = optional(object({
       min_workers = number
       max_workers = number
@@ -58,7 +58,7 @@ variable "cluster" {
 variable "cluster_policy_name" {
   description = "Name of the cluster policy to use for the gateway pipeline cluster"
   type        = string
-  
+
 }
 
 variable "event_log_to_table" {
@@ -100,9 +100,9 @@ resource "databricks_pipeline" "gateway" {
   catalog                = var.gateway_storage_catalog
 
   cluster {
-    label                        = var.cluster.label
-    node_type_id                 = var.cluster.node_type_id
-    policy_id                   = data.databricks_cluster_policy.app_cluster_policy.id
+    label        = var.cluster.label
+    node_type_id = var.cluster.node_type_id
+    policy_id    = data.databricks_cluster_policy.app_cluster_policy.id
     #driver_node_type_id          = var.cluster.driver_node_type_id
     #num_workers                  = var.cluster.num_workers
     apply_policy_default_values  = var.cluster.apply_policy_default_values
@@ -111,7 +111,7 @@ resource "databricks_pipeline" "gateway" {
     spark_conf                   = var.cluster.spark_conf
     spark_env_vars               = var.cluster.spark_env_vars
     ssh_public_keys              = var.cluster.ssh_public_keys
-    
+
     autoscale {
       min_workers = var.cluster.autoscale.min_workers
       max_workers = var.cluster.autoscale.max_workers
