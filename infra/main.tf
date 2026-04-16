@@ -54,13 +54,16 @@ module "ingestion" {
   depends_on = [module.gateway, module.landing_catalog_validation]
 }
 
-# Validate that the gateway pipeline is running before proceeding to orchestrator
+# Validate that the gateway pipeline is running before proceeding to orchestrator.
+# Set gateway_validation.enabled: false in the YAML config to skip this step
+# (useful when pipelines are already running and a validate-only run would fail).
 module "gateway_validation" {
   source = "./modules/gateway_validation"
+  count  = local.gateway_validation_enabled ? 1 : 0
 
   pipeline_id            = module.gateway.pipeline_id
-  timeout_minutes        = local.cfg.gateway_validation.timeout_minutes
-  check_interval_seconds = local.cfg.gateway_validation.check_interval_seconds
+  timeout_minutes        = try(local.cfg.gateway_validation.timeout_minutes, 30)
+  check_interval_seconds = try(local.cfg.gateway_validation.check_interval_seconds, 15)
   yaml_config_path       = var.yaml_config_path
   ingestion_pipeline_ids = [for k, v in module.ingestion : v.pipeline_id]
 

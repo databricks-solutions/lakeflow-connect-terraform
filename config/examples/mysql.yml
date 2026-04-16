@@ -70,7 +70,10 @@ gateway_pipeline_cluster_config:
   spark_env_vars: {}
   ssh_public_keys: []
 
+# Set 'enabled: false' to skip validation — useful when pipelines are already running
+# and a validate-only pipeline run would conflict with ongoing ingestion.
 gateway_validation:
+  enabled: true
   timeout_minutes: 30
   check_interval_seconds: 15
 
