@@ -81,7 +81,10 @@ gateway_pipeline_cluster_config:
   ssh_public_keys: []
 
 # Gateway validation configuration : This configuration is used by a script to validate that the gateway pipeline is running before the job resource is created/updated.
+# Set 'enabled: false' to skip validation — useful when pipelines are already running
+# and a validate-only pipeline run would conflict with ongoing ingestion.
 gateway_validation:
+  enabled: true
   timeout_minutes: 30
   check_interval_seconds: 15
 

@@ -11,6 +11,9 @@ locals {
   # MySQL has no schema level (database = schema). Used to set source_catalog/source_schema and table naming.
   is_mysql = try(local.connection.source_type, "") == "MYSQL"
 
+  # Gateway validation toggle - defaults to true if not specified (preserves existing behaviour)
+  gateway_validation_enabled = try(local.cfg.gateway_validation.enabled, true)
+
   # Event log configuration - defaults to true if not specified
   event_log_to_table = try(local.cfg.event_log.to_table, true)
 

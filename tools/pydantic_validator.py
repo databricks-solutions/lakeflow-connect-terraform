@@ -389,9 +389,13 @@ class GatewayPipelineClusterConfig(BaseModel):
 
 class GatewayValidationConfig(BaseModel):
     """Gateway validation configuration."""
-    
-    timeout_minutes: int = Field(..., ge=15)
-    check_interval_seconds: int = Field(..., ge=5)
+
+    enabled: bool = Field(
+        default=True,
+        description="Set to false to skip gateway validation entirely (e.g. when pipelines are already running)"
+    )
+    timeout_minutes: int = Field(default=30, ge=15)
+    check_interval_seconds: int = Field(default=15, ge=5)
 
 
 class EventLogConfig(BaseModel):

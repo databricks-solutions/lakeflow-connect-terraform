@@ -138,8 +138,16 @@ gateway_pipeline_cluster_policy_name: my_cluster_policy
 
 ```yaml
 gateway_validation:
+  enabled: true                # Set to false to skip validation entirely
   timeout_minutes: 30
   check_interval_seconds: 15
 ```
 
 After the gateway pipeline is created or updated, a validation script polls the pipeline status before downstream ingestion pipeline resources are created or updated. These settings control how long to wait and how frequently to poll.
+
+- `enabled`: When `true` (default), validation runs and orchestration jobs are not created or updated until the gateway is confirmed running. Set to `false` to skip this step; orchestration jobs deployment proceed immediately after the gateway and ingestion pipeline resources are applied. Useful when pipelines are already actively running and a validate-only pipeline run triggered by Terraform would conflict with ongoing ingestion.
+
+  > **Note:** On first-ever deployment with `enabled: false`, there is a risk that ingestion jobs fire before the gateway is fully up, depending on how soon the job schedule triggers. The first run may fail, but subsequent runs should succeed once the gateway is running normally.
+
+- `timeout_minutes`: How long to wait for the gateway to reach a running state before failing (minimum 15).
+- `check_interval_seconds`: How frequently to poll the pipeline status (minimum 5).
