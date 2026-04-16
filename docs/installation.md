@@ -1,5 +1,7 @@
 # Installation Guide
 
+> This guide covers local setup and deployment from your workstation. For automated CI/CD deployment, see [GitHub Actions CI/CD Setup](cicd-setup.md).
+
 ## Step 1: Clone and Configure
 
 ```bash

@@ -3,6 +3,8 @@
 This project is intended to deploy and scale out database connectors to the Databricks Lakehouse platform using infrastructure-as-code principles.
 It is intended to be a database-agnostic, YAML-driven Terraform deployment for Databricks Lakeflow Connect that provides built-in validation and orchestration for deployments.
 
+The project makes opinionated choices about how resources are organized (module structure, naming, state layout) but is intentionally designed to be extensible. Teams are encouraged to adapt the Terraform modules, configuration schema, and workflow structure to fit their own conventions.
+
 ## Quick Visual Tour
 
 ![Quick Visual Tour Animation](docs/assets/images/lakeflow-connect-terraform.gif)
@@ -21,6 +23,7 @@ It is intended to be a database-agnostic, YAML-driven Terraform deployment for D
 - **Flexible ingestion modes**: Choose between full schema ingestion or specific table selection per database
 - **Automated orchestration**: Configurable job scheduling of the managed ingestion pipelines with support for multiple sync frequencies
 - **Infrastructure-as-Code**: Fully automated deployment of gateway pipelines, ingestion pipelines, and orchestration jobs
+- **CI/CD ready**: Ships with several GitHub Actions workflows covering plan-on-PR, tag-triggered releases, and pipeline refresh operations. Use them as-is or adapt to your own CI platform
 
 **What gets deployed:**
 - Lakeflow Connect gateway pipeline, using an existing Unity Catalog connection
@@ -139,7 +142,7 @@ Provide the user/SPN used for Terraform deployment with:
 | Guide | Description |
 |-------|-------------|
 | [Installation](docs/installation.md) | Clone, configure, authenticate, set up a Terraform backend, and deploy |
-| [GitHub Actions CI/CD Setup](docs/cicd-setup.md) | Self-hosted runner setup, secrets, variables, and workflow reference |
+| [GitHub Actions CI/CD Setup](docs/cicd-setup.md) | Ready-to-use workflows for plan-on-PR, tag-triggered releases, and pipeline refresh — self-hosted runner setup, secrets, and variables reference |
 | [YAML Configuration Reference](docs/yaml-configuration.md) | All configuration options explained with examples |
 
 ## How does it compare to other deployment options?
