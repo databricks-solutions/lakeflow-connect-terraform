@@ -135,7 +135,7 @@ class JobConfig(BaseModel):
 
 class TableConfig(BaseModel):
     """Table selection configuration."""
-    
+
     source_table: str = Field(
         ...,
         description="Source table name"
@@ -152,13 +152,38 @@ class TableConfig(BaseModel):
         default=None,
         description="Override destination schema for this table (defaults to schema/database-level schema)"
     )
-    
+    # QBC-specific fields (optional; may also be set via qbc.default_cursor_column / qbc.default_scd_type)
+    cursor_column: Optional[str] = Field(
+        default=None,
+        description="QBC: column used as cursor for incremental sync (overrides qbc.default_cursor_column)"
+    )
+    scd_type: Optional[str] = Field(
+        default=None,
+        description="QBC: SCD strategy — SCD_TYPE_1, SCD_TYPE_2, or APPEND_ONLY (overrides qbc.default_scd_type)"
+    )
+    deletion_condition: Optional[str] = Field(
+        default=None,
+        description="QBC: SQL expression to identify soft-deleted rows (optional)"
+    )
+
     @field_validator("source_table")
     @classmethod
     def validate_table_name(cls, v: str) -> str:
         """Validate table name is non-empty."""
         if not v or not v.strip():
             raise ValueError("Table name cannot be empty")
+        return v
+
+    @field_validator("scd_type")
+    @classmethod
+    def validate_scd_type(cls, v: Optional[str]) -> Optional[str]:
+        """Validate scd_type is one of the allowed values."""
+        if v is not None:
+            allowed = {"SCD_TYPE_1", "SCD_TYPE_2", "APPEND_ONLY"}
+            if v not in allowed:
+                raise ValueError(
+                    f"scd_type must be one of {sorted(allowed)}, got: {v!r}"
+                )
         return v
 
 
@@ -398,6 +423,30 @@ class GatewayValidationConfig(BaseModel):
     check_interval_seconds: int = Field(default=15, ge=5)
 
 
+class QBCConfig(BaseModel):
+    """Query-Based Connector defaults applied across all tables."""
+
+    default_cursor_column: Optional[str] = Field(
+        default=None,
+        description="Default cursor column for incremental sync (overridden per-table)"
+    )
+    default_scd_type: str = Field(
+        default="SCD_TYPE_1",
+        description="Default SCD strategy — SCD_TYPE_1, SCD_TYPE_2, or APPEND_ONLY"
+    )
+
+    @field_validator("default_scd_type")
+    @classmethod
+    def validate_default_scd_type(cls, v: str) -> str:
+        """Validate default_scd_type is one of the allowed values."""
+        allowed = {"SCD_TYPE_1", "SCD_TYPE_2", "APPEND_ONLY"}
+        if v not in allowed:
+            raise ValueError(
+                f"qbc.default_scd_type must be one of {sorted(allowed)}, got: {v!r}"
+            )
+        return v
+
+
 class EventLogConfig(BaseModel):
     """Event log configuration."""
     
@@ -419,7 +468,7 @@ class EventLogConfig(BaseModel):
 
 class LakeflowConfig(BaseModel):
     """Root configuration model for Lakeflow Connect."""
-    
+
     env: str = Field(
         ...,
         description="Environment name (e.g., 'dev', 'prod')"
@@ -428,6 +477,10 @@ class LakeflowConfig(BaseModel):
         ...,
         description="Application name"
     )
+    connector_type: str = Field(
+        default="CDC",
+        description="Connector mode: CDC (Change Data Capture) or QBC (Query-Based Connector)"
+    )
     unity_catalog: Optional[UnityCatalogConfig] = Field(
         default=None,
         description="Unity Catalog configuration"
@@ -435,20 +488,32 @@ class LakeflowConfig(BaseModel):
     connection: ConnectionConfig
     gateway_pipeline_cluster_policy_name: Optional[str] = Field(
         default=None,
-        description="Cluster policy name for gateway pipeline"
+        description="Cluster policy name for gateway pipeline (CDC only)"
     )
     databases: list[DatabaseConfig] = Field(
         ...,
         min_length=1,
         description="List of source databases"
     )
-    gateway_pipeline_cluster_config: GatewayPipelineClusterConfig
-    gateway_validation: GatewayValidationConfig
+    # CDC-only: required when connector_type is CDC
+    gateway_pipeline_cluster_config: Optional[GatewayPipelineClusterConfig] = Field(
+        default=None,
+        description="Gateway pipeline cluster configuration (CDC only)"
+    )
+    gateway_validation: Optional[GatewayValidationConfig] = Field(
+        default=None,
+        description="Gateway validation settings (CDC only)"
+    )
     event_log: Optional[EventLogConfig] = Field(
         default=None,
         description="Event log configuration"
     )
     job: JobConfig
+    # QBC-only: optional defaults applied across all tables
+    qbc: Optional[QBCConfig] = Field(
+        default=None,
+        description="Query-Based Connector defaults (QBC only)"
+    )
     
     @field_validator("env", "app_name")
     @classmethod
@@ -457,68 +522,113 @@ class LakeflowConfig(BaseModel):
         if not v or not v.strip():
             raise ValueError("Value must be a non-empty string")
         return v
-    
+
+    @field_validator("connector_type")
+    @classmethod
+    def validate_connector_type(cls, v: str) -> str:
+        """Validate connector_type is CDC or QBC."""
+        normalised = v.upper()
+        if normalised not in {"CDC", "QBC"}:
+            raise ValueError(
+                f"connector_type must be 'CDC' or 'QBC', got: {v!r}"
+            )
+        return normalised
+
+    @model_validator(mode="after")
+    def validate_cdc_specific_fields(self):
+        """For CDC, gateway_pipeline_cluster_config is required."""
+        if self.connector_type == "CDC":
+            if self.gateway_pipeline_cluster_config is None:
+                raise ValueError(
+                    "gateway_pipeline_cluster_config is required for CDC connector type"
+                )
+        return self
+
     @model_validator(mode="after")
     def validate_unity_catalog_configuration(self):
         """
-        Validate Unity Catalog configuration logic:
-        - Either global_uc_catalog exists, OR
-        - (staging_uc_catalog exists AND all databases have uc_catalog)
+        Validate Unity Catalog configuration logic.
+
+        CDC:
+          - global_uc_catalog set → OK
+          - global_uc_catalog absent → staging_uc_catalog required AND every database must have uc_catalog
+
+        QBC:
+          - global_uc_catalog set → OK (used as fallback for any database without uc_catalog)
+          - global_uc_catalog absent / unity_catalog omitted → every database must have uc_catalog
+            (the unity_catalog section can be omitted entirely in this case)
         """
         uc_config = self.unity_catalog
-        
-        if uc_config is None:
-            raise ValueError(
-                "unity_catalog configuration is required. "
-                "Must provide either global_uc_catalog or (staging_uc_catalog + per-database uc_catalog for all databases)"
-            )
-        
-        has_global = uc_config.global_uc_catalog is not None
-        has_staging = uc_config.staging_uc_catalog is not None
-        
+        is_qbc = self.connector_type == "QBC"
+
+        has_global = uc_config is not None and uc_config.global_uc_catalog is not None
+        has_staging = uc_config is not None and uc_config.staging_uc_catalog is not None
+
         if not has_global:
-            # If no global catalog, must have staging catalog
-            if not has_staging:
-                raise ValueError(
-                    "unity_catalog.staging_uc_catalog is required when global_uc_catalog is not provided"
-                )
-            
-            # AND all databases must have uc_catalog specified
+            # CDC requires the unity_catalog block and a staging catalog
+            if not is_qbc:
+                if uc_config is None:
+                    raise ValueError(
+                        "unity_catalog configuration is required for CDC. "
+                        "Provide global_uc_catalog, or staging_uc_catalog + per-database uc_catalog."
+                    )
+                if not has_staging:
+                    raise ValueError(
+                        "unity_catalog.staging_uc_catalog is required for CDC "
+                        "when global_uc_catalog is not provided"
+                    )
+
+            # Both CDC and QBC: without a global fallback every database must name its own catalog
             databases_without_catalog = [
                 db.name for db in self.databases if db.uc_catalog is None
             ]
-            
             if databases_without_catalog:
                 raise ValueError(
-                    f"When unity_catalog.global_uc_catalog is not provided, all databases must specify uc_catalog. "
-                    f"Missing for: {', '.join(databases_without_catalog)}"
+                    "When unity_catalog.global_uc_catalog is not provided, every database must "
+                    "specify uc_catalog. Missing for: "
+                    + ", ".join(databases_without_catalog)
                 )
-        
+
         return self
     
     @model_validator(mode="after")
     def validate_postgresql_configuration(self):
         """
         Validate PostgreSQL-specific configuration:
-        - If source_type is POSTGRESQL, databases MUST have replication_slot and publication
-        - If source_type is not POSTGRESQL, these fields should NOT be present
+        - CDC + POSTGRESQL: databases MUST have replication_slot and publication
+        - QBC + POSTGRESQL: replication_slot and publication are NOT required
+        - Non-POSTGRESQL: these fields should NOT be present
         """
         source_type = self.connection.source_type
-        
+        is_qbc = self.connector_type == "QBC"
+
         for db in self.databases:
             has_replication = db.replication_slot is not None
             has_publication = db.publication is not None
-            
+
             if source_type == "POSTGRESQL":
-                # PostgreSQL requires both fields
-                if not has_replication:
-                    raise ValueError(
-                        f"Database '{db.name}': replication_slot is required for PostgreSQL source_type"
-                    )
-                if not has_publication:
-                    raise ValueError(
-                        f"Database '{db.name}': publication is required for PostgreSQL source_type"
-                    )
+                if is_qbc:
+                    # QBC uses the UC connection — no replication slot / publication needed
+                    if has_replication:
+                        raise ValueError(
+                            f"Database '{db.name}': replication_slot is not used for QBC "
+                            f"PostgreSQL sources (QBC connects via Unity Catalog)"
+                        )
+                    if has_publication:
+                        raise ValueError(
+                            f"Database '{db.name}': publication is not used for QBC "
+                            f"PostgreSQL sources (QBC connects via Unity Catalog)"
+                        )
+                else:
+                    # CDC + PostgreSQL requires both fields
+                    if not has_replication:
+                        raise ValueError(
+                            f"Database '{db.name}': replication_slot is required for PostgreSQL CDC"
+                        )
+                    if not has_publication:
+                        raise ValueError(
+                            f"Database '{db.name}': publication is required for PostgreSQL CDC"
+                        )
             else:
                 # Non-PostgreSQL should not have these fields
                 if has_replication:
@@ -531,7 +641,7 @@ class LakeflowConfig(BaseModel):
                         f"Database '{db.name}': publication is only valid for PostgreSQL sources, "
                         f"but source_type is {source_type}"
                     )
-        
+
         return self
     
     @model_validator(mode="after")
@@ -551,6 +661,38 @@ class LakeflowConfig(BaseModel):
                         file=sys.stderr,
                     )
                     return self  # One warning is enough
+        return self
+
+    @model_validator(mode="after")
+    def validate_qbc_configuration(self):
+        """
+        Validate QBC-specific configuration:
+        - Every table must have a resolved cursor_column (per-table or via qbc.default_cursor_column).
+        - use_schema_ingestion must be false for every schema (QBC only supports explicit table lists).
+        """
+        if self.connector_type != "QBC":
+            return self
+
+        default_cursor = self.qbc.default_cursor_column if self.qbc else None
+
+        for db in self.databases:
+            for schema in db.schemas:
+                if schema.use_schema_ingestion:
+                    raise ValueError(
+                        f"Database '{db.name}', schema '{schema.name}': "
+                        f"use_schema_ingestion must be false for QBC — "
+                        f"provide an explicit tables list with cursor_column"
+                    )
+                tables = schema.tables or []
+                for table in tables:
+                    resolved_cursor = table.cursor_column or default_cursor
+                    if not resolved_cursor:
+                        raise ValueError(
+                            f"Database '{db.name}', schema '{schema.name}', "
+                            f"table '{table.source_table}': cursor_column is required for QBC. "
+                            f"Set it on the table or via qbc.default_cursor_column."
+                        )
+
         return self
 
     @model_validator(mode="after")
@@ -641,6 +783,7 @@ def validate_yaml(path: Path) -> int:
         print("SUCCESS. YAML validation passed!")
         print(f"   - Environment: {config.env}")
         print(f"   - Application: {config.app_name}")
+        print(f"   - Connector type: {config.connector_type}")
         print(f"   - Source type: {config.connection.source_type}")
         print(f"   - Databases: {len(config.databases)}")
         print(f"   - Event logs to table: {config.event_log.to_table if config.event_log else 'Not configured'}")

@@ -1,6 +1,17 @@
 # YAML Configuration Reference
 
-See `config/examples/` for complete example configurations ([MySQL](../config/examples/mysql.yml), [Oracle](../config/examples/oracle.yml), [PostgreSQL](../config/examples/postgresql.yml), [SQL Server](../config/examples/sqlserver.yml)). The configuration is fully YAML-driven with the following main sections:
+See `config/examples/` for complete example configurations ([MySQL](../config/examples/mysql.yml), [Oracle](../config/examples/oracle.yml), [PostgreSQL CDC](../config/examples/postgresql.yml), [PostgreSQL QBC](../config/examples/postgresql_qbc.yml), [SQL Server](../config/examples/sqlserver.yml)). The configuration is fully YAML-driven with the following main sections:
+
+## Connector Type
+
+```yaml
+connector_type: CDC   # CDC (default) or QBC
+```
+
+Two connector modes are supported:
+
+- **CDC** (Change Data Capture, default): streams database changes in near-real-time via a gateway pipeline. Requires `gateway_pipeline_cluster_config` and — for PostgreSQL — a replication slot and publication per database.
+- **QBC** (Query-Based Connector): polls the source using SQL queries for incremental sync. Uses serverless compute; no gateway pipeline or cluster configuration needed. Requires explicit table lists with a `cursor_column` per table.
 
 ## Connection
 
@@ -68,6 +79,55 @@ databases:
 ### MySQL note
 
 MySQL has no schema level (the hierarchy is server → database → tables). In the YAML, list each database and under `schemas` use a placeholder name (e.g. `"<not applicable in MySQL>"`) and list tables by their full MySQL table name. Set `connection.source_type: "MYSQL"`. If `use_schema_ingestion: true` is set, it is ignored for MySQL and ingestion uses the `tables` list; the Pydantic validator prints an informational message when this is encountered. See `config/examples/mysql.yml` for a complete example.
+
+## QBC — Query-Based Connector
+
+When `connector_type: QBC`, replace the CDC-specific sections (`gateway_pipeline_cluster_config`, `gateway_validation`) with the optional `qbc` defaults block:
+
+```yaml
+connector_type: QBC
+
+qbc:
+  default_cursor_column: "updated_at"   # Column used for incremental reads (required unless set per-table)
+  default_scd_type: "SCD_TYPE_1"        # SCD_TYPE_1, SCD_TYPE_2, or APPEND_ONLY (default: SCD_TYPE_1)
+```
+
+Tables must be listed explicitly (`use_schema_ingestion: false`). Each table inherits the QBC defaults but can override them:
+
+```yaml
+databases:
+  - name: my_database
+    schemas:
+      - name: my_schema
+        use_schema_ingestion: false   # required for QBC
+        tables:
+          - source_table: orders          # uses default_cursor_column and default_scd_type
+          - source_table: customers
+            cursor_column: "modified_ts"  # per-table cursor override
+            scd_type: "SCD_TYPE_2"        # per-table SCD override
+          - source_table: events
+            scd_type: "APPEND_ONLY"
+            deletion_condition: "is_deleted = true"   # optional: marks logically deleted rows
+```
+
+QBC fields:
+
+| Field | Scope | Required | Description |
+|-------|-------|----------|-------------|
+| `qbc.default_cursor_column` | global | if not set per-table | Column used for incremental reads (e.g. `updated_at`) |
+| `qbc.default_scd_type` | global | no (default: `SCD_TYPE_1`) | Default SCD merge strategy |
+| `tables[].cursor_column` | per-table | if no global default | Overrides `default_cursor_column` for this table |
+| `tables[].scd_type` | per-table | no | Overrides `default_scd_type` for this table |
+| `tables[].deletion_condition` | per-table | no | SQL expression identifying soft-deleted rows |
+
+**SCD type reference:**
+- `SCD_TYPE_1`: Upsert — overwrite existing rows in place (default)
+- `SCD_TYPE_2`: Track full row history with effective-date columns
+- `APPEND_ONLY`: Insert every incoming row without deduplication or merging
+
+**PostgreSQL note for QBC:** `replication_slot` and `publication` are **not** needed — QBC connects via the Unity Catalog connection, not the CDC replication path.
+
+See `config/examples/postgresql_qbc.yml` for a complete example.
 
 ## Event Logs
 

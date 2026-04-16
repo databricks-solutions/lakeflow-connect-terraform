@@ -1,0 +1,79 @@
+# Query-Based Connector (QBC) example — PostgreSQL
+#
+# Use connector_type: QBC when you want Databricks to issue SQL queries
+# for incremental sync instead of streaming CDC events via a gateway pipeline.
+# QBC uses serverless compute; no gateway pipeline or cluster config is required.
+
+env: "dev"
+app_name: "wealth_mgmt_qbc"
+
+connector_type: QBC
+
+# UC connection name for the source database (must already exist in Unity Catalog)
+connection:
+  name: "amenon_qbc_lf_connect_postgresql"
+  source_type: "POSTGRESQL"
+  # Note: replication_slot and publication are NOT needed for QBC —
+  # QBC connects via the Unity Catalog connection, not the CDC replication path.
+
+
+# To use a single shared catalog instead, add the following block (Omit if using per-database uc_catalog overrides)
+#   unity_catalog:
+#     global_uc_catalog: "my_catalog"
+
+# QBC defaults — applied to all tables unless overridden per-table
+qbc:
+  default_cursor_column: "updated_at"   # Column used for incremental reads
+  default_scd_type: "SCD_TYPE_1"        # SCD_TYPE_1, SCD_TYPE_2, or APPEND_ONLY
+
+# Databases and tables to ingest.
+# QBC requires use_schema_ingestion: false — tables must be listed explicitly.
+# Each database overrides uc_catalog so its tables land in a dedicated catalog.
+databases:
+  - name: wealth_mgmt_one
+    uc_catalog: "lf_connect_qbc_wealth_mgmt_one"   # per-database catalog override
+    schemas:
+      - name: client_management
+        use_schema_ingestion: false
+        tables:
+          - source_table: accounts       # inherits default_cursor_column (updated_at) and default_scd_type
+          - source_table: advisors
+          - source_table: clients
+            scd_type: "SCD_TYPE_2"       # track full client history; cursor stays updated_at
+      - name: portfolio_management
+        use_schema_ingestion: false
+        tables:
+          - source_table: holdings
+          - source_table: portfolios
+          - source_table: transactions
+            cursor_column: "transaction_date"  # transactions has no updated_at column
+            scd_type: "APPEND_ONLY"            # transactions are immutable — append only
+            # Optional: mark logically deleted rows
+            # deletion_condition: "status = 'cancelled'"
+
+  - name: wealth_mgmt_two
+    uc_catalog: "lf_connect_qbc_wealth_mgmt_two"   # per-database catalog override
+    schemas:
+      - name: client_management
+        use_schema_ingestion: false
+        tables:
+          - source_table: accounts
+          - source_table: clients
+      - name: portfolio_management
+        use_schema_ingestion: false
+        tables:
+          - source_table: holdings
+          - source_table: transactions
+            cursor_column: "transaction_date"  # transactions has no updated_at column
+            scd_type: "APPEND_ONLY"
+
+# Event log configuration
+event_log:
+  to_table: true
+
+# Job orchestration — QBC always uses the common schedule
+job:
+  common_job_for_all_pipelines: true
+  common_schedule:
+    quartz_cron_expression: "0 0 * * * ?"   # Run every hour
+    timezone_id: "UTC"
