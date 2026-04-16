@@ -12,11 +12,6 @@ output "landing_catalogs" {
   value       = { for k, v in module.landing_catalog_validation : k => v.catalog_name }
 }
 
-output "staging_catalog" {
-  description = "Staging catalog for gateway pipeline"
-  value       = module.staging.catalog_name
-}
-
 output "landing_schemas_by_catalog" {
   description = "Landing schemas grouped by catalog"
   value = {
@@ -29,17 +24,33 @@ output "landing_schemas_by_catalog" {
   }
 }
 
+
+# ── CDC-only outputs ──────────────────────────────────────────────────────────
+
+output "staging_catalog" {
+  description = "Staging catalog for gateway pipeline (CDC only)"
+  value       = length(module.staging) > 0 ? module.staging[0].catalog_name : null
+}
+
 output "gateway_pipeline_id" {
-  description = "Gateway pipeline ID"
-  value       = module.gateway.pipeline_id
+  description = "Gateway pipeline ID (CDC only)"
+  value       = length(module.gateway) > 0 ? module.gateway[0].pipeline_id : null
 }
 
 output "ingestion_pipeline_id_map" {
-  description = "Ingestion pipeline IDs mapped by pipeline name"
+  description = "Ingestion pipeline IDs mapped by pipeline name (CDC only)"
   value       = { for k, v in module.ingestion : k => v.pipeline_id }
 }
 
 output "common_orchestrator_all_pipelines" {
-  description = "Key value pair of job name and ID"
+  description = "Key value pair of job name and ID (CDC only)"
   value       = length(module.orchestrator_shared_all_pipelines) > 0 ? module.orchestrator_shared_all_pipelines[0].common_orchestrator_all_pipelines : {}
-} 
+}
+
+
+# ── QBC-only outputs ──────────────────────────────────────────────────────────
+
+output "qbc_pipeline_id" {
+  description = "QBC pipeline ID (QBC only)"
+  value       = length(module.qbc) > 0 ? module.qbc[0].pipeline_id : null
+}

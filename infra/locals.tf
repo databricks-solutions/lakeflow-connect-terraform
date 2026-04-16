@@ -11,11 +11,39 @@ locals {
   # MySQL has no schema level (database = schema). Used to set source_catalog/source_schema and table naming.
   is_mysql = try(local.connection.source_type, "") == "MYSQL"
 
+  # Connector type — CDC (default) preserves full backward compatibility with existing configs.
+  # Set connector_type: QBC in the YAML to deploy a query-based connector instead.
+  connector_type = upper(try(local.cfg.connector_type, "CDC"))
+  is_cdc         = local.connector_type == "CDC"
+  is_qbc         = local.connector_type == "QBC"
+
   # Gateway validation toggle - defaults to true if not specified (preserves existing behaviour)
   gateway_validation_enabled = try(local.cfg.gateway_validation.enabled, true)
 
   # Event log configuration - defaults to true if not specified
   event_log_to_table = try(local.cfg.event_log.to_table, true)
+
+  # QBC defaults — only relevant when is_qbc
+  qbc_default_cursor_column = try(local.cfg.qbc.default_cursor_column, null)
+  qbc_default_scd_type      = try(local.cfg.qbc.default_scd_type, "SCD_TYPE_1")
+
+  # Flattened table list for the QBC pipeline, resolving cursor/scd/deletion fields
+  # with the coalesce pattern: per-table override → qbc defaults.
+  qbc_tables = local.is_qbc ? flatten([
+    for pair in local.database_schema_pairs : [
+      for table in pair.specific_tables : {
+        # MySQL has no catalog level; all other sources use the database name as source_catalog.
+        source_catalog      = local.is_mysql ? null : pair.database_name
+        source_schema       = local.is_mysql ? pair.database_name : pair.schema_name
+        source_table        = table.source_table
+        destination_catalog = try(table.destination_catalog, pair.uc_catalog)
+        destination_schema  = try(table.destination_schema, pair.destination_schema)
+        cursor_column       = coalesce(try(table.cursor_column, null), local.qbc_default_cursor_column)
+        scd_type            = coalesce(try(table.scd_type, null), local.qbc_default_scd_type)
+        deletion_condition  = try(table.deletion_condition, null)
+      }
+    ]
+  ]) : []
 
   # Unity Catalog configuration with validation
   # global_uc_catalog is required - if not provided, set to null to force Terraform error
