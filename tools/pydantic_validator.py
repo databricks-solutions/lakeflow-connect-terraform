@@ -358,21 +358,14 @@ class ConnectionConfig(BaseModel):
     @model_validator(mode="after")
     def validate_oracle_connection_parameters(self):
         """
-        When source_type is ORACLE, connection_parameters with source_catalog is required.
-        When source_type is not ORACLE, connection_parameters must not be set.
+        connection_parameters is only valid for Oracle sources.
+        Whether it is *required* depends on connector_type (CDC only) — checked in AppConfig.
         """
-        if self.source_type == "ORACLE":
-            if self.connection_parameters is None:
-                raise ValueError(
-                    "connection.connection_parameters is required when source_type is ORACLE "
-                    "(e.g. connection_parameters.source_catalog for the CDB name)"
-                )
-        else:
-            if self.connection_parameters is not None:
-                raise ValueError(
-                    f"connection.connection_parameters is only valid for Oracle sources, "
-                    f"but source_type is {self.source_type}"
-                )
+        if self.source_type != "ORACLE" and self.connection_parameters is not None:
+            raise ValueError(
+                f"connection.connection_parameters is only valid for Oracle sources, "
+                f"but source_type is {self.source_type}"
+            )
         return self
 
 
@@ -536,11 +529,16 @@ class LakeflowConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_cdc_specific_fields(self):
-        """For CDC, gateway_pipeline_cluster_config is required."""
+        """For CDC, gateway_pipeline_cluster_config and Oracle connection_parameters are required."""
         if self.connector_type == "CDC":
             if self.gateway_pipeline_cluster_config is None:
                 raise ValueError(
                     "gateway_pipeline_cluster_config is required for CDC connector type"
+                )
+            if self.connection.source_type == "ORACLE" and self.connection.connection_parameters is None:
+                raise ValueError(
+                    "connection.connection_parameters is required for Oracle CDC "
+                    "(e.g. connection_parameters.source_catalog for the CDB name)"
                 )
         return self
 
