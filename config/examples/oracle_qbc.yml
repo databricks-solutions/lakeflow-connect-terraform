@@ -1,0 +1,81 @@
+# Query-Based Connector (QBC) example — Oracle
+#
+# Use connector_type: QBC when you want Databricks to issue SQL queries
+# for incremental sync instead of streaming CDC events via a gateway pipeline.
+# QBC uses serverless compute; no gateway pipeline or cluster config is required.
+#
+# Note: Oracle identifiers (schemas, tables, cursor columns) are typically
+# uppercase — match the case exactly as they appear in the source database.
+
+env: "dev"
+app_name: "wealth_mgmt_oracle_qbc"
+
+connector_type: QBC
+
+# UC connection name for the source database (must already exist in Unity Catalog)
+connection:
+  name: "amenon_lf_connect_oracle19c-query-based-connector"
+  source_type: "ORACLE"
+  # Note: connection_parameters (source_catalog / CDB name) is NOT needed for QBC —
+  # QBC connects via the Unity Catalog connection, not the CDC replication path.
+
+
+# To use a single shared catalog instead, add the following block (omit if using per-database uc_catalog overrides)
+#   unity_catalog:
+#     global_uc_catalog: "my_catalog"
+
+# QBC defaults — applied to all tables unless overridden per-table
+qbc:
+  default_cursor_column: "UPDATED_AT"   # Column used for incremental reads (uppercase for Oracle)
+  default_scd_type: "SCD_TYPE_1"        # SCD_TYPE_1, SCD_TYPE_2, or APPEND_ONLY
+
+# Databases and tables to ingest.
+# QBC requires use_schema_ingestion: false — tables must be listed explicitly.
+# Each database overrides uc_catalog so its tables land in a dedicated catalog.
+# In Oracle, the "database" corresponds to the PDB (pluggable database) name.
+databases:
+  - name: ORAPDB1
+    uc_catalog: "amenon"   # per-database catalog override
+    schemas:
+      - name: CLIENT_MANAGEMENT
+        use_schema_ingestion: false
+        tables:
+          - source_table: ACCOUNTS       # inherits default_cursor_column (UPDATED_AT) and default_scd_type
+          - source_table: ADVISORS
+          - source_table: CLIENTS
+            scd_type: "SCD_TYPE_2"       # track full client history; cursor stays UPDATED_AT
+      # - name: PORTFOLIO_MANAGEMENT
+      #   use_schema_ingestion: false
+      #   tables:
+      #     - source_table: HOLDINGS
+      #     - source_table: PORTFOLIOS
+      #     - source_table: TRANSACTIONS
+      #       cursor_column: "TRANSACTION_DATE"  # TRANSACTIONS has no UPDATED_AT column
+      #       scd_type: "APPEND_ONLY"            # transactions are immutable — append only
+
+  # - name: ORAPDB2
+  #   uc_catalog: "lf_connect_qbc_oracle_pdb2"   # per-database catalog override
+  #   schemas:
+  #     - name: CLIENT_MANAGEMENT
+  #       use_schema_ingestion: false
+  #       tables:
+  #         - source_table: ACCOUNTS
+  #         - source_table: CLIENTS
+  #     - name: PORTFOLIO_MANAGEMENT
+  #       use_schema_ingestion: false
+  #       tables:
+  #         - source_table: HOLDINGS
+  #         - source_table: TRANSACTIONS
+  #           cursor_column: "TRANSACTION_DATE"
+  #           scd_type: "APPEND_ONLY"
+
+# Event log configuration
+event_log:
+  to_table: true
+
+# Job orchestration — QBC always uses the common schedule
+job:
+  common_job_for_all_pipelines: true
+  common_schedule:
+    quartz_cron_expression: "0 0 * * * ?"   # Run every hour
+    timezone_id: "UTC"
