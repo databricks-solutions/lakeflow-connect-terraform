@@ -53,17 +53,34 @@ After validation passes, proceed with Terraform deployment (no Poetry needed for
 
 ## Step 3: Configure Authentication
 
-Set up authentication for the Databricks workspace Terraform provider:
+Set up authentication for the Databricks workspace Terraform provider. The Databricks unified auth layer evaluates methods in priority order and stops at the first match.
 
-**Option A: Personal Login (Development)**
+**Option A: Personal Login (Development — Azure only)**
 ```bash
-# For Azure
 az login
 export DATABRICKS_HOST="https://adb-xxxxx.azuredatabricks.net"
 export DATABRICKS_AUTH_TYPE="azure-cli"
 ```
 
-**Option B: Service Principal**
+**Option B: OAuth M2M — Service Principal (Azure or AWS workspaces)**
+```bash
+export DATABRICKS_HOST="https://<workspace-url>"
+export DATABRICKS_CLIENT_ID="<oauth-client-id>"
+export DATABRICKS_CLIENT_SECRET="<oauth-client-secret>"
+```
+
+Or via a `~/.databrickscfg` profile:
+```ini
+[my-profile]
+host          = https://<workspace-url>
+client_id     = <oauth-client-id>
+client_secret = <oauth-client-secret>
+```
+```bash
+export DATABRICKS_CONFIG_PROFILE=my-profile
+```
+
+**Option C: Azure SPN / Entra ID (Azure workspaces only)**
 ```bash
 # Create profile in ~/.databrickscfg
 cat >> ~/.databrickscfg << EOF
@@ -75,11 +92,10 @@ azure_client_secret = <client_secret>
 auth_type           = azure-client-secret
 EOF
 
-# Set environment variable
 export DATABRICKS_CONFIG_PROFILE=production
 ```
 
-> **CI/CD:** For GitHub Actions deployments, authentication uses a dedicated Deploy SPN with `ARM_*` environment variables rather than `az login` or a config profile. See [GitHub Actions CI/CD Setup](cicd-setup.md) for details.
+> **CI/CD:** GitHub Actions workflows support both OAuth M2M and Azure SPN auth via repository secrets — no `az login` or config profile needed. OAuth M2M is recommended as it works on both Azure and AWS workspaces. See [GitHub Actions CI/CD Setup](cicd-setup.md) for details.
 
 ## Step 4: Configure Terraform Backend
 

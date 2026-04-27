@@ -32,6 +32,8 @@ qbc:
 databases:
   - name: wealth_mgmt_one
     uc_catalog: "lf_connect_qbc_wealth_mgmt_one"   # per-database catalog override
+    schema_prefix: "wealth_mgmt_one_" # Optionally can add schema_prefix
+    # schema_suffix: "_raw" # Optionally can add schema_suffix
     schemas:
       - name: client_management
         use_schema_ingestion: false
