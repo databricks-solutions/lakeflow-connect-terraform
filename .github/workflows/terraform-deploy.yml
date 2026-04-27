@@ -15,11 +15,21 @@
 #
 # Self-hosted runner prerequisites: python, pip3, terraform
 #
-# Authentication model (two separate SPNs):
+# Authentication model:
 #   TF_STATE_SPN  - Azure SP with Storage Blob Data Contributor on tf-state
 #                   container. Used ONLY for terraform init (azurerm backend).
-#   DEPLOY_SPN    - Azure SP registered in Databricks workspace as a service
-#                   principal. Used for terraform plan/apply (Databricks provider).
+#   DEPLOY identity - Authenticates to the Databricks workspace for plan/apply.
+#                   Supports two methods; the SDK picks whichever secrets are set
+#                   (OAuth M2M takes precedence per Databricks unified auth order):
+#
+#   Option A — OAuth M2M (Azure or AWS workspaces):
+#     DATABRICKS_CLIENT_ID     = Databricks service principal OAuth client ID
+#     DATABRICKS_CLIENT_SECRET = Databricks service principal OAuth client secret
+#
+#   Option B — Azure SPN / Entra ID (Azure workspaces only):
+#     DEPLOY_SPN_CLIENT_ID     = Azure AD application (client) ID  → ARM_CLIENT_ID
+#     DEPLOY_SPN_CLIENT_SECRET = Azure AD client secret            → ARM_CLIENT_SECRET
+#     ARM_TENANT_ID            = Azure AD tenant ID
 #
 # Repository variables (azurerm partial backend — state blob location):
 #   TF_STATE_RESOURCE_GROUP, TF_STATE_STORAGE_ACCOUNT, TF_STATE_CONTAINER, TF_STATE_KEY
@@ -41,13 +51,11 @@
 name: "Terraform Deploy - Lakeflow Connect"
 
 on:
-  # Run validate + plan on PRs targeting main (when infra or config changes)
+  # Run validate + plan on all PRs targeting main.
+  # A 'changes' job detects whether infra/config/tools files were touched;
+  # if not, a lightweight skip job satisfies the required 'Plan' status check.
   pull_request:
     branches: [main]
-    paths:
-      - "infra/**"
-      - "config/**"
-      - "tools/**"
 
   # Manual trigger for full deploy (plan + apply)
   workflow_dispatch:
@@ -77,24 +85,59 @@ env:
 
 jobs:
   # -------------------------------------------------------------------------
+  # Job 0: Detect whether infra/config/tools files changed
+  # Always runs; outputs infra=true/false used by downstream jobs.
+  # On workflow_dispatch (no PR context) always outputs true.
+  # -------------------------------------------------------------------------
+  changes:
+    name: "Detect Changes"
+    runs-on: self-hosted
+    outputs:
+      infra: ${{ steps.filter.outputs.infra }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Check for infra/config/tools changes
+        id: filter
+        run: |
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "infra=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          if git diff --name-only \
+               "${{ github.event.pull_request.base.sha }}" \
+               "${{ github.event.pull_request.head.sha }}" \
+             | grep -qE '^(infra|config|tools)/'; then
+            echo "infra=true" >> $GITHUB_OUTPUT
+          else
+            echo "infra=false" >> $GITHUB_OUTPUT
+          fi
+
+  # -------------------------------------------------------------------------
   # Job 1: Validate config and Terraform files
   # -------------------------------------------------------------------------
   validate:
     name: "Validate"
+    needs: changes
+    if: needs.changes.outputs.infra == 'true'
     runs-on: self-hosted
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4.3.1
 
-      - name: Set up Python venv and install dependencies
-        run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install pydantic pyyaml croniter
+      # Uncomment if the self-hosted runner does NOT have the Poetry venv pre-activated.
+      # Works on both self-hosted (pip respects pip.conf proxy) and GitHub-hosted runners.
+      # - name: Install Python dependencies
+      #   run: |
+      #     pip install poetry  # omit if Poetry is already on PATH
+      #     poetry export --without-hashes -f requirements.txt -o requirements.txt
+      #     pip install -r requirements.txt
 
       - name: Validate YAML config with Pydantic
         run: |
-          source .venv/bin/activate
           CONFIG_PATH="${{ github.event.inputs.config_file || 'config/lakeflow_dev.yml' }}"
           # Adjust path for validator (it expects path relative to repo root)
           if [[ "$CONFIG_PATH" == ../config/* ]]; then
@@ -126,11 +169,12 @@ jobs:
         run: terraform validate
 
   # -------------------------------------------------------------------------
-  # Job 2: Terraform Plan (always runs)
+  # Job 2a: Terraform Plan — runs only when infra/config/tools files changed
   # -------------------------------------------------------------------------
   plan:
     name: "Plan"
-    needs: validate
+    needs: [changes, validate]
+    if: needs.changes.outputs.infra == 'true'
     runs-on: self-hosted
     outputs:
       has_changes: ${{ steps.plan.outputs.has_changes }}
@@ -138,23 +182,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4.3.1
 
-      - name: Set up Python venv and install dependencies
-        run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install databricks-sdk pyyaml
+      # Uncomment if the self-hosted runner does NOT have the Poetry venv pre-activated.
+      # Works on both self-hosted (pip respects pip.conf proxy) and GitHub-hosted runners.
+      # - name: Install Python dependencies
+      #   run: |
+      #     pip install poetry  # omit if Poetry is already on PATH
+      #     poetry export --without-hashes -f requirements.txt -o requirements.txt
+      #     pip install -r requirements.txt
 
       - name: Terraform Init and Plan
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
-          # DEPLOY_SPN credentials as ARM_* — used by Databricks provider for
-          # azure-client-secret auth during plan. Also provides subscription ID.
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          # Set DATABRICKS_AUTH_TYPE to 'oauth-m2m' or 'azure-client-secret' when
+          # both credential sets are present to avoid "more than one auth method" error.
+          DATABRICKS_AUTH_TYPE: ${{ vars.DATABRICKS_AUTH_TYPE }}
+          # OAuth M2M (Azure or AWS workspaces)
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          # Azure SPN (Entra ID) — Azure workspaces only
           ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
           ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}
           ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
         run: |
           set -o pipefail
 
@@ -217,6 +268,22 @@ jobs:
       #     retention-days: 1
 
   # -------------------------------------------------------------------------
+  # Job 2b: Skip plan for docs-only PRs
+  # Satisfies the required 'Plan' status check when no infra files changed.
+  # -------------------------------------------------------------------------
+  plan-skip:
+    name: "Plan"
+    needs: changes
+    if: always() && needs.changes.outputs.infra != 'true' && github.event_name == 'pull_request'
+    runs-on: self-hosted
+    steps:
+      - name: Skip — no infra/config/tools changes
+        run: |
+          echo "## Plan Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "No changes detected in \`infra/\`, \`config/\`, or \`tools/\` — plan is not required for this PR." >> $GITHUB_STEP_SUMMARY
+
+  # -------------------------------------------------------------------------
   # Job 3: Terraform Apply
   # Runs init + plan + apply in the same job.
   # NOTE: For approval gates, configure a GitHub Environment with required
@@ -238,20 +305,29 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4.3.1
 
-      - name: Install Python dependencies for local-exec
-        run: |
-          pip3 install --break-system-packages databricks-sdk pyyaml
+      # Uncomment if the self-hosted runner does NOT have the Poetry venv pre-activated.
+      # Works on both self-hosted (pip respects pip.conf proxy) and GitHub-hosted runners.
+      # - name: Install Python dependencies
+      #   run: |
+      #     pip install poetry  # omit if Poetry is already on PATH
+      #     poetry export --without-hashes -f requirements.txt -o requirements.txt
+      #     pip install -r requirements.txt
 
       - name: Terraform Init, Plan, and Apply
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
-          # DEPLOY_SPN credentials as ARM_* — used by Databricks provider for
-          # azure-client-secret auth. Also provides subscription ID.
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          # Set DATABRICKS_AUTH_TYPE to 'oauth-m2m' or 'azure-client-secret' when
+          # both credential sets are present to avoid "more than one auth method" error.
+          DATABRICKS_AUTH_TYPE: ${{ vars.DATABRICKS_AUTH_TYPE }}
+          # OAuth M2M (Azure or AWS workspaces)
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          # Azure SPN (Entra ID) — Azure workspaces only
           ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
           ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}
           ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
         run: |
           set -o pipefail
 
@@ -303,11 +379,13 @@ jobs:
         if: github.event.inputs.action == 'plan-and-apply'
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
           ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
           ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}
           ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
         run: |
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Deployed Resources" >> $GITHUB_STEP_SUMMARY

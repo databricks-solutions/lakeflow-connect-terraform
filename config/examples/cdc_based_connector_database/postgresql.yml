@@ -80,7 +80,7 @@ databases:
 # Create one gateway pipeline for the entire application
 gateway_pipeline_cluster_config:
   label: "default"
-  node_type_id: "Standard_E4d_v4"
+  node_type_id: "Standard_E4d_v4" # For AWS workspaces, change to a node type applicable to AWS. E.g. 'r5.xlarge'
   autoscale:
     min_workers: 0
     max_workers: 0

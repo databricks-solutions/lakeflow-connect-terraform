@@ -46,13 +46,6 @@ databases:
           - source_table: stock_movements
 
   # - name: retail_ops_db_two
-  #   # Optional: Override global_uc_catalog for this specific database
-  #   # uc_catalog: "custom_catalog_name"  # If not provided, uses global_uc_catalog
-  #   
-  #   # Optional: Add prefix/suffix to schema names for this database. In UC, it will be visible as {schema_prefix}{<the schema name>}{schema_suffix}
-  #   # schema_prefix: "retail_ops_db_two_"
-  #   # schema_suffix: "_raw"
-  #   
   #   schemas:
   #     - name: dbo
   #       use_schema_ingestion: false
@@ -60,28 +53,7 @@ databases:
   #         - source_table: vendors
   #         - source_table: products
   #         - source_table: product_vendors
-  #    - name: inventory
-  #       use_schema_ingestion: false
-  #       tables:
-  #         - source_table: warehouses
-  #         - source_table: stock_items
-  #         - source_table: stock_movements
-  # - name: retail_ops_db_three
-  #   # Optional: Override global_uc_catalog for this specific database
-  #   # uc_catalog: "custom_catalog_name"  # If not provided, uses global_uc_catalog
-  #   
-  #   # Optional: Add prefix/suffix to schema names for this database. In UC, it will be visible as {schema_prefix}{<the schema name>}{schema_suffix}
-  #   # schema_prefix: "retail_ops_db_three_"
-  #   # schema_suffix: "_raw"
-  #   
-  #   schemas:
-  #     - name: dbo
-  #       use_schema_ingestion: false
-  #       tables:
-  #         - source_table: vendors
-  #         - source_table: products
-  #         - source_table: product_vendors
-  #    - name: inventory
+  #     - name: inventory
   #       use_schema_ingestion: false
   #       tables:
   #         - source_table: warehouses
@@ -91,7 +63,7 @@ databases:
 # Create one gateway pipeline for the entire application
 gateway_pipeline_cluster_config:
   label: "default"
-  node_type_id: "Standard_E4d_v4"
+  node_type_id: "Standard_E4d_v4" # For AWS workspaces, change to a node type applicable to AWS. E.g. 'r5.xlarge'
   autoscale:
     min_workers: 0
     max_workers: 0

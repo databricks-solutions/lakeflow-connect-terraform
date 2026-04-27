@@ -52,11 +52,21 @@
 #
 # Config file: config/lakeflow_dev.yml
 #
-# Authentication model (two separate SPNs):
+# Authentication model:
 #   TF_STATE_SPN  - Azure SP with Storage Blob Data Contributor on tf-state
 #                   container. Used ONLY for terraform init (azurerm backend).
-#   DEPLOY_SPN    - Azure SP registered in Databricks workspace as a service
-#                   principal. Used for terraform plan/apply (Databricks provider).
+#   DEPLOY identity - Authenticates to the Databricks workspace for plan/apply.
+#                   Supports two methods; the SDK picks whichever secrets are set
+#                   (OAuth M2M takes precedence per Databricks unified auth order):
+#
+#   Option A — OAuth M2M (Azure or AWS workspaces):
+#     DATABRICKS_CLIENT_ID     = Databricks service principal OAuth client ID
+#     DATABRICKS_CLIENT_SECRET = Databricks service principal OAuth client secret
+#
+#   Option B — Azure SPN / Entra ID (Azure workspaces only):
+#     DEPLOY_SPN_CLIENT_ID     = Azure AD application (client) ID  → ARM_CLIENT_ID
+#     DEPLOY_SPN_CLIENT_SECRET = Azure AD client secret            → ARM_CLIENT_SECRET
+#     ARM_TENANT_ID            = Azure AD tenant ID
 #
 # Repository variables (azurerm partial backend — state blob location):
 #   TF_STATE_RESOURCE_GROUP, TF_STATE_STORAGE_ACCOUNT, TF_STATE_CONTAINER, TF_STATE_KEY
@@ -126,15 +136,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4.3.1
 
-      - name: Set up Python venv and install dependencies
-        run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install pydantic pyyaml croniter
+      # Uncomment if the self-hosted runner does NOT have the Poetry venv pre-activated.
+      # Works on both self-hosted (pip respects pip.conf proxy) and GitHub-hosted runners.
+      # - name: Install Python dependencies
+      #   run: |
+      #     pip install poetry  # omit if Poetry is already on PATH
+      #     poetry export --without-hashes -f requirements.txt -o requirements.txt
+      #     pip install -r requirements.txt
 
       - name: Validate YAML config with Pydantic
         run: |
-          source .venv/bin/activate
           echo "Validating config: config/lakeflow_dev.yml"
           python tools/pydantic_validator.py "config/lakeflow_dev.yml"
 
@@ -173,21 +184,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4.3.1
 
-      - name: Set up Python venv and install dependencies
-        run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install databricks-sdk pyyaml
+      # Uncomment if the self-hosted runner does NOT have the Poetry venv pre-activated.
+      # Works on both self-hosted (pip respects pip.conf proxy) and GitHub-hosted runners.
+      # - name: Install Python dependencies
+      #   run: |
+      #     pip install poetry  # omit if Poetry is already on PATH
+      #     poetry export --without-hashes -f requirements.txt -o requirements.txt
+      #     pip install -r requirements.txt
 
       - name: Terraform Init and Plan
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          # Set DATABRICKS_AUTH_TYPE to 'oauth-m2m' or 'azure-client-secret' when
+          # both credential sets are present to avoid "more than one auth method" error.
+          DATABRICKS_AUTH_TYPE: ${{ vars.DATABRICKS_AUTH_TYPE }}
+          # OAuth M2M (Azure or AWS workspaces)
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          # Azure SPN (Entra ID) — Azure workspaces only
           ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
           ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}
           ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
         run: |
           set -o pipefail
 
@@ -246,18 +266,29 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4.3.1
 
-      - name: Install Python dependencies for local-exec
-        run: |
-          pip3 install --break-system-packages databricks-sdk pyyaml
+      # Uncomment if the self-hosted runner does NOT have the Poetry venv pre-activated.
+      # Works on both self-hosted (pip respects pip.conf proxy) and GitHub-hosted runners.
+      # - name: Install Python dependencies
+      #   run: |
+      #     pip install poetry  # omit if Poetry is already on PATH
+      #     poetry export --without-hashes -f requirements.txt -o requirements.txt
+      #     pip install -r requirements.txt
 
       - name: Terraform Init, Plan, and Apply
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          # Set DATABRICKS_AUTH_TYPE to 'oauth-m2m' or 'azure-client-secret' when
+          # both credential sets are present to avoid "more than one auth method" error.
+          DATABRICKS_AUTH_TYPE: ${{ vars.DATABRICKS_AUTH_TYPE }}
+          # OAuth M2M (Azure or AWS workspaces)
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          # Azure SPN (Entra ID) — Azure workspaces only
           ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
           ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}
           ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
         run: |
           set -o pipefail
 
@@ -299,11 +330,13 @@ jobs:
       - name: Show deployed resource IDs
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
           ARM_CLIENT_ID: ${{ secrets.DEPLOY_SPN_CLIENT_ID }}
           ARM_CLIENT_SECRET: ${{ secrets.DEPLOY_SPN_CLIENT_SECRET }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.TF_STATE_ARM_SUBSCRIPTION_ID }}
           ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
         run: |
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Deployed Resources" >> $GITHUB_STEP_SUMMARY

@@ -121,9 +121,9 @@ module "qbc" {
   source = "./modules/qbc_pipeline"
   count  = local.is_qbc ? 1 : 0
 
-  pipeline_name       = "lf-connect-${local.app_name}-qbc"
-  connection_name     = local.connection.name
-  source_type         = null # serverless — inferred from UC connection
+  pipeline_name   = "lf-connect-${local.app_name}-qbc"
+  connection_name = local.connection.name
+  source_type     = null # serverless — inferred from UC connection
   # Pipeline-level catalog/schema is required by Databricks even when each table
   # specifies its own destination. Fall back to the first table's catalog when
   # global_uc_catalog is null (i.e. per-database uc_catalog overrides are in use).

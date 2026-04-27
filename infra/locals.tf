@@ -36,6 +36,7 @@ locals {
         source_catalog      = local.is_mysql ? null : pair.database_name
         source_schema       = local.is_mysql ? pair.database_name : pair.schema_name
         source_table        = table.source_table
+        destination_table   = try(table.destination_table, null)
         destination_catalog = try(table.destination_catalog, pair.uc_catalog)
         destination_schema  = try(table.destination_schema, pair.destination_schema)
         cursor_column       = coalesce(try(table.cursor_column, null), local.qbc_default_cursor_column)

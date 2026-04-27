@@ -14,7 +14,7 @@ connector_type: QBC
 
 # UC connection name for the source database (must already exist in Unity Catalog)
 connection:
-  name: "amenon_lf_connect_oracle19c-query-based-connector"
+  name: "lf_connect_oracle19c-query-based-connector"
   source_type: "ORACLE"
   # Note: connection_parameters (source_catalog / CDB name) is NOT needed for QBC —
   # QBC connects via the Unity Catalog connection, not the CDC replication path.
@@ -35,15 +35,17 @@ qbc:
 # In Oracle, the "database" corresponds to the PDB (pluggable database) name.
 databases:
   - name: ORAPDB1
-    uc_catalog: "amenon"   # per-database catalog override
+    uc_catalog: "lf_connect_demo_catalog"   # per-database catalog override
+    schema_prefix: "orapdb1_" # Optionally can add schema_prefix
+    # schema_suffix: "_raw" # Optionally can add schema_suffix
     schemas:
       - name: CLIENT_MANAGEMENT
         use_schema_ingestion: false
         tables:
           - source_table: ACCOUNTS       # inherits default_cursor_column (UPDATED_AT) and default_scd_type
           - source_table: ADVISORS
-          - source_table: CLIENTS
-            scd_type: "SCD_TYPE_2"       # track full client history; cursor stays UPDATED_AT
+          # - source_table: CLIENTS
+          #   scd_type: "SCD_TYPE_2"       # track full client history; cursor stays UPDATED_AT
       # - name: PORTFOLIO_MANAGEMENT
       #   use_schema_ingestion: false
       #   tables:

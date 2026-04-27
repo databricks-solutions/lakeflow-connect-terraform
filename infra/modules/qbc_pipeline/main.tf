@@ -32,6 +32,7 @@ variable "tables" {
     source_table        = string
     destination_catalog = string
     destination_schema  = string
+    destination_table   = optional(string) # Optional: if not provided, uses source_table
     cursor_column       = string
     scd_type            = string
     deletion_condition  = optional(string, null)
@@ -74,7 +75,7 @@ resource "databricks_pipeline" "qbc" {
 
           destination_catalog = objects.value.destination_catalog
           destination_schema  = objects.value.destination_schema
-          # destination_table omitted — defaults to lowercase(source_table)
+          destination_table   = coalesce(objects.value.destination_table, objects.value.source_table)
 
           table_configuration {
             scd_type = objects.value.scd_type
