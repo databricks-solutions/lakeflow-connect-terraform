@@ -1,0 +1,82 @@
+# Query-Based Connector (QBC) example — SQL Server
+#
+# Use connector_type: QBC when you want Databricks to issue SQL queries
+# for incremental sync instead of streaming CDC events via a gateway pipeline.
+# QBC uses serverless compute; no gateway pipeline or cluster config is required.
+#
+
+env: "dev"
+app_name: "retail_ops_qbc"
+
+connector_type: QBC
+
+# UC connection name for the source database (must already exist in Unity Catalog).
+# Update this to your actual QBC connection name. Note: QBC users don't need permissions that a CDC user would need, hence can be limited access
+connection:
+  name: "sql_retail_ops_connection_qbc"
+  source_type: "SQLSERVER"
+
+unity_catalog:
+  global_uc_catalog: "lf_connect_demo_catalog"   # fallback catalog for retail_ops_db_two
+
+# QBC defaults — applied to all tables unless overridden per-table.
+# All tables default to APPEND_ONLY because this schema has no updated_at column.
+# Override scd_type per-table if you add updated_at in the future.
+qbc:
+  default_cursor_column: "created_at"
+  default_scd_type: "APPEND_ONLY"
+
+databases:
+  - name: retail_ops_db_one
+    uc_catalog: "lf_connect_retail_ops"
+    schemas:
+      - name: dbo
+        use_schema_ingestion: false
+        tables:
+          - source_table: vendors
+            cursor_column: "vendor_id"      # no timestamp column; identity PK used as cursor
+          - source_table: products
+            # inherits default_cursor_column (created_at) and default_scd_type (APPEND_ONLY)
+          - source_table: product_vendors
+            destination_table: product_vendors_v1
+            cursor_column: "vendor_id"      # junction table with no timestamp; vendor_id used as cursor
+      - name: inventory
+        use_schema_ingestion: false
+        tables:
+          - source_table: warehouses
+            # inherits default_cursor_column (created_at) and default_scd_type (APPEND_ONLY)
+          - source_table: stock_items
+            # inherits default_cursor_column (created_at) and default_scd_type (APPEND_ONLY)
+            # NOTE: updates to quantity_on_hand will not be captured — see header comment
+          - source_table: stock_movements
+            cursor_column: "movement_date"  # movement_date is the natural event timestamp
+
+  - name: retail_ops_db_two
+    # No uc_catalog override — falls back to global_uc_catalog (lf_connect_demo_catalog)
+    schemas:
+      - name: dbo
+        use_schema_ingestion: false
+        tables:
+          - source_table: vendors
+            cursor_column: "vendor_id"
+          - source_table: products
+          - source_table: product_vendors
+            cursor_column: "vendor_id"
+      - name: inventory
+        use_schema_ingestion: false
+        tables:
+          - source_table: warehouses
+          - source_table: stock_items
+          - source_table: stock_movements
+            cursor_column: "movement_date"
+
+# Event log configuration
+event_log:
+  to_table: true
+
+# Job orchestration — QBC always uses the common schedule
+job:
+  common_job_for_all_pipelines: true
+  common_schedule:
+    quartz_cron_expression: "0 */30 * * * ?"
+    timezone_id: "UTC"
