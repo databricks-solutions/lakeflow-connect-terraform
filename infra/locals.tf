@@ -5,7 +5,7 @@ locals {
   env      = local.cfg.env
   app_name = local.cfg.app_name
 
-  connection = local.cfg.connection
+  connection = try(local.cfg.connection, null)
   job        = local.cfg.job
 
   # MySQL has no schema level (database = schema). Used to set source_catalog/source_schema and table naming.
@@ -13,9 +13,11 @@ locals {
 
   # Connector type — CDC (default) preserves full backward compatibility with existing configs.
   # Set connector_type: QBC in the YAML to deploy a query-based connector instead.
+  # Set connector_type: QBC_FOREIGN_CATALOG for foreign catalog ingestion (e.g. Snowflake via UC foreign catalog).
   connector_type = upper(try(local.cfg.connector_type, "CDC"))
   is_cdc         = local.connector_type == "CDC"
   is_qbc         = local.connector_type == "QBC"
+  is_qbc_fc      = local.connector_type == "QBC_FOREIGN_CATALOG"
 
   # Gateway validation toggle - defaults to true if not specified (preserves existing behaviour)
   gateway_validation_enabled = try(local.cfg.gateway_validation.enabled, true)
@@ -23,7 +25,7 @@ locals {
   # Event log configuration - defaults to true if not specified
   event_log_to_table = try(local.cfg.event_log.to_table, true)
 
-  # QBC defaults — only relevant when is_qbc
+  # QBC defaults — shared by both QBC and QBC_FOREIGN_CATALOG connector types
   qbc_default_cursor_column = try(local.cfg.qbc.default_cursor_column, null)
   qbc_default_scd_type      = try(local.cfg.qbc.default_scd_type, "SCD_TYPE_1")
 
@@ -42,6 +44,27 @@ locals {
         cursor_column       = coalesce(try(table.cursor_column, null), local.qbc_default_cursor_column)
         scd_type            = coalesce(try(table.scd_type, null), local.qbc_default_scd_type)
         deletion_condition  = try(table.deletion_condition, null)
+      }
+    ]
+  ]) : []
+
+  # Provision to pass along Pipeline-level Spark configuration for QBC_FOREIGN_CATALOG. Sourced from `pipeline_configuration` in YAML and defaults to empty if none provided
+  qbc_fc_pipeline_configuration = try(local.cfg.pipeline_configuration, {})
+
+  # Flattened table list for the QBC foreign catalog pipeline.
+  qbc_fc_tables = local.is_qbc_fc ? flatten([
+    for pair in local.database_schema_pairs : [
+      for table in pair.specific_tables : {
+        source_catalog      = pair.database_name
+        source_schema       = pair.schema_name
+        source_table        = table.source_table
+        destination_table   = try(table.destination_table, null)
+        destination_catalog = try(table.destination_catalog, pair.uc_catalog)
+        destination_schema  = try(table.destination_schema, pair.destination_schema)
+        cursor_column       = coalesce(try(table.cursor_column, null), local.qbc_default_cursor_column)
+        scd_type            = coalesce(try(table.scd_type, null), local.qbc_default_scd_type)
+        deletion_condition  = try(table.deletion_condition, null)
+        primary_keys        = try(table.primary_keys, [])
       }
     ]
   ]) : []

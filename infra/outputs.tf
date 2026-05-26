@@ -54,3 +54,8 @@ output "qbc_pipeline_id" {
   description = "QBC pipeline ID (QBC only)"
   value       = length(module.qbc) > 0 ? module.qbc[0].pipeline_id : null
 }
+
+output "qbc_fc_pipeline_id" {
+  description = "QBC foreign catalog pipeline ID (QBC_FOREIGN_CATALOG only)"
+  value       = length(module.qbc_fc) > 0 ? module.qbc_fc[0].pipeline_id : null
+}
