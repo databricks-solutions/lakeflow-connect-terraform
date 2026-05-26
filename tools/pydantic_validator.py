@@ -165,6 +165,11 @@ class TableConfig(BaseModel):
         default=None,
         description="QBC: SQL expression to identify soft-deleted rows (optional)"
     )
+    # QBC_FOREIGN_CATALOG-specific fields
+    primary_keys: Optional[list[str]] = Field(
+        default=None,
+        description="QBC_FOREIGN_CATALOG: primary key column names (optional)"
+    )
 
     @field_validator("source_table")
     @classmethod
@@ -472,13 +477,20 @@ class LakeflowConfig(BaseModel):
     )
     connector_type: str = Field(
         default="CDC",
-        description="Connector mode: CDC (Change Data Capture) or QBC (Query-Based Connector)"
+        description="Connector mode: CDC, QBC, or QBC_FOREIGN_CATALOG"
     )
     unity_catalog: Optional[UnityCatalogConfig] = Field(
         default=None,
         description="Unity Catalog configuration"
     )
-    connection: ConnectionConfig
+    connection: Optional[ConnectionConfig] = Field(
+        default=None,
+        description="Database connection configuration (not used for QBC_FOREIGN_CATALOG)"
+    )
+    pipeline_configuration: Optional[dict[str, str]] = Field(
+        default=None,
+        description="Pipeline-level Spark configuration key-value pairs (QBC_FOREIGN_CATALOG)"
+    )
     gateway_pipeline_cluster_policy_name: Optional[str] = Field(
         default=None,
         description="Cluster policy name for gateway pipeline (CDC only)"
@@ -519,17 +531,31 @@ class LakeflowConfig(BaseModel):
     @field_validator("connector_type")
     @classmethod
     def validate_connector_type(cls, v: str) -> str:
-        """Validate connector_type is CDC or QBC."""
+        """Validate connector_type is CDC, QBC, or QBC_FOREIGN_CATALOG."""
         normalised = v.upper()
-        if normalised not in {"CDC", "QBC"}:
+        if normalised not in {"CDC", "QBC", "QBC_FOREIGN_CATALOG"}:
             raise ValueError(
-                f"connector_type must be 'CDC' or 'QBC', got: {v!r}"
+                f"connector_type must be 'CDC', 'QBC', or 'QBC_FOREIGN_CATALOG', got: {v!r}"
             )
         return normalised
 
     @model_validator(mode="after")
-    def validate_cdc_specific_fields(self):
-        """For CDC, gateway_pipeline_cluster_config and Oracle connection_parameters are required."""
+    def validate_connection_presence(self):
+        """
+        CDC and QBC require a connection block; QBC_FOREIGN_CATALOG must not have one.
+        For CDC, gateway_pipeline_cluster_config and Oracle connection_parameters are also required.
+        """
+        if self.connector_type in {"CDC", "QBC"}:
+            if self.connection is None:
+                raise ValueError(
+                    f"connection is required for connector_type '{self.connector_type}'"
+                )
+        if self.connector_type == "QBC_FOREIGN_CATALOG":
+            if self.connection is not None:
+                raise ValueError(
+                    "connection must not be set for QBC_FOREIGN_CATALOG — "
+                    "the source is identified by the foreign catalog name in databases[].name"
+                )
         if self.connector_type == "CDC":
             if self.gateway_pipeline_cluster_config is None:
                 raise ValueError(
@@ -557,7 +583,7 @@ class LakeflowConfig(BaseModel):
             (the unity_catalog section can be omitted entirely in this case)
         """
         uc_config = self.unity_catalog
-        is_qbc = self.connector_type == "QBC"
+        is_qbc = self.connector_type in {"QBC", "QBC_FOREIGN_CATALOG"}
 
         has_global = uc_config is not None and uc_config.global_uc_catalog is not None
         has_staging = uc_config is not None and uc_config.staging_uc_catalog is not None
@@ -597,6 +623,8 @@ class LakeflowConfig(BaseModel):
         - QBC + POSTGRESQL: replication_slot and publication are NOT required
         - Non-POSTGRESQL: these fields should NOT be present
         """
+        if self.connection is None:
+            return self  # QBC_FOREIGN_CATALOG — no connection to validate
         source_type = self.connection.source_type
         is_qbc = self.connector_type == "QBC"
 
@@ -648,7 +676,7 @@ class LakeflowConfig(BaseModel):
         For MySQL: use_schema_ingestion=true does not apply (no schema level).
         Emit a warning when set; Terraform will ignore it and use table-level ingestion.
         """
-        if self.connection.source_type != "MYSQL":
+        if self.connection is None or self.connection.source_type != "MYSQL":
             return self
         for db in self.databases:
             for schema in db.schemas:
@@ -668,7 +696,7 @@ class LakeflowConfig(BaseModel):
         - Every table must have a resolved cursor_column (per-table or via qbc.default_cursor_column).
         - use_schema_ingestion must be false for every schema (QBC only supports explicit table lists).
         """
-        if self.connector_type != "QBC":
+        if self.connector_type not in {"QBC", "QBC_FOREIGN_CATALOG"}:
             return self
 
         default_cursor = self.qbc.default_cursor_column if self.qbc else None
@@ -782,7 +810,7 @@ def validate_yaml(path: Path) -> int:
         print(f"   - Environment: {config.env}")
         print(f"   - Application: {config.app_name}")
         print(f"   - Connector type: {config.connector_type}")
-        print(f"   - Source type: {config.connection.source_type}")
+        print(f"   - Source type: {config.connection.source_type if config.connection else 'N/A (foreign catalog)'}")
         print(f"   - Databases: {len(config.databases)}")
         print(f"   - Event logs to table: {config.event_log.to_table if config.event_log else 'Not configured'}")
         return 0

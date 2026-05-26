@@ -32,7 +32,7 @@ module "gateway" {
   count  = local.is_cdc ? 1 : 0
 
   name                    = "lf-connect-${local.app_name}-gateway"
-  connection_name         = local.connection.name
+  connection_name         = try(local.connection.name, null)
   gateway_storage_catalog = local.staging_uc_catalog
   gateway_storage_schema  = local.staging_schema_name
   source_type             = try(local.connection.source_type, null)
@@ -54,7 +54,7 @@ module "ingestion" {
   destination_catalog   = each.value.uc_catalog
   destination_schema    = each.value.destination_schema
   gateway_pipeline_id   = module.gateway[0].pipeline_id
-  source_type           = local.connection.source_type
+  source_type           = try(local.connection.source_type, null)
   use_schema_ingestion  = local.is_mysql ? false : each.value.use_schema_ingestion
   specific_tables       = each.value.specific_tables
   source_configurations = lookup(local.database_source_configurations, each.value.database_name, null)
@@ -122,7 +122,7 @@ module "qbc" {
   count  = local.is_qbc ? 1 : 0
 
   pipeline_name   = "lf-connect-${local.app_name}-qbc"
-  connection_name = local.connection.name
+  connection_name = try(local.connection.name, null)
   source_type     = null # serverless — inferred from UC connection
   # Pipeline-level catalog/schema is required by Databricks even when each table
   # specifies its own destination. Fall back to the first table's catalog when
@@ -146,4 +146,38 @@ module "orchestrator_qbc" {
   is_common_job       = true
 
   depends_on = [module.qbc]
+}
+
+
+# ── QBC Foreign Catalog resources ─────────────────────────────────────────────
+
+# Single managed ingestion pipeline reading from a UC foreign catalog.
+# No gateway pipeline or cluster config required — uses serverless compute.
+module "qbc_fc" {
+  source = "./modules/qbc_pipeline"
+  count  = local.is_qbc_fc ? 1 : 0
+
+  pipeline_name                  = "lf-connect-${local.app_name}-qbc"
+  connection_name                = null
+  ingest_from_uc_foreign_catalog = true
+  source_type                    = "FOREIGN_CATALOG"
+  destination_catalog            = coalesce(local.global_uc_catalog, local.qbc_fc_tables[0].destination_catalog)
+  destination_schema             = local.qbc_fc_tables[0].destination_schema
+  tables                         = local.qbc_fc_tables
+  pipeline_configuration         = local.qbc_fc_pipeline_configuration
+  event_log_to_table             = local.event_log_to_table
+
+  depends_on = [module.landing_catalog_validation]
+}
+
+module "orchestrator_qbc_fc" {
+  source = "./modules/job"
+  count  = local.is_qbc_fc ? 1 : 0
+
+  name                = "lf-connect-${local.app_name}-qbc-job"
+  ingestion_pipelines = { "qbc" = module.qbc_fc[0].pipeline_id }
+  schedule            = local.job.common_schedule
+  is_common_job       = true
+
+  depends_on = [module.qbc_fc]
 }

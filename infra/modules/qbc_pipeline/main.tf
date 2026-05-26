@@ -4,8 +4,21 @@ variable "pipeline_name" {
 }
 
 variable "connection_name" {
-  description = "Unity Catalog connection name for the source database"
+  description = "Unity Catalog connection name for the source database (null for foreign catalog ingestion)"
   type        = string
+  default     = null
+}
+
+variable "ingest_from_uc_foreign_catalog" {
+  description = "Set true when ingesting from a UC foreign catalog instead of a connection"
+  type        = bool
+  default     = false
+}
+
+variable "pipeline_configuration" {
+  description = "Pipeline-level Spark configuration key-value pairs"
+  type        = map(string)
+  default     = {}
 }
 
 variable "source_type" {
@@ -36,6 +49,7 @@ variable "tables" {
     cursor_column       = string
     scd_type            = string
     deletion_condition  = optional(string, null)
+    primary_keys        = optional(list(string), [])
   }))
 }
 
@@ -51,6 +65,9 @@ resource "databricks_pipeline" "qbc" {
   catalog = var.destination_catalog
   schema  = var.destination_schema
 
+  # Providing ability to pass `configuration` from the config file to the QBC pipeline, in case some features need to be included for special handling of types or generally for the connector
+  configuration = length(var.pipeline_configuration) > 0 ? var.pipeline_configuration : null
+
   dynamic "event_log" {
     for_each = var.event_log_to_table ? [1] : []
     content {
@@ -59,7 +76,8 @@ resource "databricks_pipeline" "qbc" {
   }
 
   ingestion_definition {
-    connection_name = var.connection_name
+    connection_name                = var.connection_name
+    ingest_from_uc_foreign_catalog = var.ingest_from_uc_foreign_catalog ? true : null
 
     # null = serverless (Databricks infers source type from the UC connection).
     # Set explicitly only if required for your source/compute combination.
@@ -78,7 +96,8 @@ resource "databricks_pipeline" "qbc" {
           destination_table   = coalesce(objects.value.destination_table, objects.value.source_table)
 
           table_configuration {
-            scd_type = objects.value.scd_type
+            primary_keys = length(objects.value.primary_keys) > 0 ? objects.value.primary_keys : null
+            scd_type     = objects.value.scd_type
 
             query_based_connector_config {
               cursor_columns = [objects.value.cursor_column]
