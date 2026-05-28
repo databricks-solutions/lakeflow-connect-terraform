@@ -59,6 +59,17 @@ variable "event_log_to_table" {
   default     = true
 }
 
+variable "permissions" {
+  description = "List of permission grants for this pipeline"
+  type = list(object({
+    level                  = string
+    user_name              = optional(string)
+    group_name             = optional(string)
+    service_principal_name = optional(string)
+  }))
+  default = []
+}
+
 resource "databricks_pipeline" "qbc" {
   name = var.pipeline_name
 
@@ -107,6 +118,21 @@ resource "databricks_pipeline" "qbc" {
           }
         }
       }
+    }
+  }
+}
+
+resource "databricks_permissions" "pipeline_perms" {
+  count       = length(var.permissions) > 0 ? 1 : 0
+  pipeline_id = databricks_pipeline.qbc.id
+
+  dynamic "access_control" {
+    for_each = var.permissions
+    content {
+      user_name              = try(access_control.value.user_name, null)
+      group_name             = try(access_control.value.group_name, null)
+      service_principal_name = try(access_control.value.service_principal_name, null)
+      permission_level       = access_control.value.level
     }
   }
 }

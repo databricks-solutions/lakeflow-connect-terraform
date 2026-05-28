@@ -140,6 +140,38 @@ When `to_table: true`, pipeline event logs are materialized to Delta tables:
 - Gateway pipeline logs → staging schema (e.g. `{app_name}_lf_staging`)
 - Ingestion pipeline logs → their respective landing schemas
 
+## Permissions
+
+```yaml
+# Optional
+permissions:
+  - level: CAN_MANAGE
+    service_principal_name: a4d1e08b-d613-4b77-8750-53834e8df0d0
+  - level: CAN_VIEW
+    user_name: user@databricks.com
+  - level: CAN_VIEW
+    group_name: data-engineers
+```
+
+When specified, permissions are applied to **all deployed Databricks resources** — gateway and ingestion pipelines (CDC), QBC pipeline (QBC / QBC_FOREIGN_CATALOG), and all orchestration jobs.
+
+Supported permission levels:
+
+| Level | Pipelines | Jobs |
+|-------|-----------|------|
+| `CAN_VIEW` | ✓ | ✓ |
+| `CAN_RUN` | ✓ | ✓ (auto-mapped to `CAN_MANAGE_RUN`) |
+| `CAN_MANAGE` | ✓ | ✓ |
+
+Each entry must specify exactly one of:
+- `user_name`: Databricks user email address
+- `group_name`: Databricks group name
+- `service_principal_name`: Service principal application ID (UUID)
+
+> **Note:** Databricks jobs have no `CAN_RUN` permission level; the equivalent is `CAN_MANAGE_RUN`. If you specify `CAN_RUN` in the `permissions` block it is silently mapped to `CAN_MANAGE_RUN` when applied to job resources, so the same block works uniformly across all resource types.
+
+If `permissions` is omitted entirely, no `databricks_permissions` resources are created and Databricks workspace defaults apply.
+
 ## Job Orchestration
 
 ```yaml

@@ -180,4 +180,14 @@ locals {
       pair.pair_key if contains(schedule_config.applies_to, pair.database_name)
     ]
   }
+
+  # Permissions are optional; omit from YAML to skip databricks_permissions resource creation. Applied uniformly to all deployed pipelines and jobs.
+  permissions = try(local.cfg.permissions, [])
+
+  # Job permissions: identical to pipeline permissions except CAN_RUN → CAN_MANAGE_RUN (Databricks jobs have no CAN_RUN level; CAN_MANAGE_RUN is the equivalent )
+  job_permissions = [
+    for p in try(local.cfg.permissions, []) : merge(p, {
+      level = p.level == "CAN_RUN" ? "CAN_MANAGE_RUN" : p.level
+    })
+  ]
 } 

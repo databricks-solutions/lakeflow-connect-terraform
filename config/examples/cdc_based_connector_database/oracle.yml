@@ -95,6 +95,18 @@ gateway_validation:
 event_log:
   to_table: true  # Set to false to disable event log table creation
 
+# Optional: Uncomment and document `permissions` block to grant access to all deployed pipelines and jobs.
+# Supported levels: CAN_VIEW, CAN_RUN, CAN_MANAGE
+# Supported principal types: user_name, group_name, service_principal_name
+# Note: CAN_RUN is automatically mapped to CAN_MANAGE_RUN for job resources.
+# permissions:
+#   - level: CAN_MANAGE
+#     service_principal_name: a4d1e001-d123-4b99-9876-12345e8df1d1
+#   - level: CAN_RUN
+#     group_name: data-engineers
+#   - level: CAN_VIEW
+#     user_name: user@example.com
+
 # Create orchestration using Lakeflow Jobs to run ingestion pipelines
 job:
   common_job_for_all_pipelines: false
