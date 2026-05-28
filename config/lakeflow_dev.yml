@@ -64,13 +64,23 @@ gateway_pipeline_cluster_config:
   ssh_public_keys: []
 
 gateway_validation:
-  enabled: true
+  enabled: false
   timeout_minutes: 30
   check_interval_seconds: 15
 
 
 event_log:
   to_table: true
+
+permissions:
+  - level: CAN_RUN
+    group_name: pipeline_runner_grp
+  - level: CAN_VIEW
+    user_name: user@example.com
+  - level: CAN_MANAGE
+    group_name: dbx_pipeline_admin_grp
+  - level: CAN_RUN
+    service_principal_name: a4d1e001-d123-4b99-9876-12345e8df1d1
 
 job:
   common_job_for_all_pipelines: false

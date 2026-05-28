@@ -40,6 +40,7 @@ module "gateway" {
   cluster                 = local.cfg.gateway_pipeline_cluster_config
   cluster_policy_name     = local.cfg.gateway_pipeline_cluster_policy_name
   event_log_to_table      = local.event_log_to_table
+  permissions             = local.permissions
   depends_on              = [module.staging]
 }
 
@@ -59,6 +60,7 @@ module "ingestion" {
   specific_tables       = each.value.specific_tables
   source_configurations = lookup(local.database_source_configurations, each.value.database_name, null)
   event_log_to_table    = local.event_log_to_table
+  permissions           = local.permissions
 
   depends_on = [module.gateway, module.landing_catalog_validation]
 }
@@ -88,6 +90,7 @@ module "orchestrator_shared_all_pipelines" {
   ingestion_pipelines = { for k, v in module.ingestion : k => v.pipeline_id }
   schedule            = local.job.common_schedule
   is_common_job       = true
+  permissions         = local.job_permissions
 
   depends_on = [module.gateway_validation]
 }
@@ -108,6 +111,7 @@ module "orchestrator_per_schedule" {
     "schedule"
   )
   is_common_job = false
+  permissions   = local.job_permissions
 
   depends_on = [module.gateway_validation]
 }
@@ -131,6 +135,7 @@ module "qbc" {
   destination_schema  = local.qbc_tables[0].destination_schema
   tables              = local.qbc_tables
   event_log_to_table  = local.event_log_to_table
+  permissions         = local.permissions
 
   depends_on = [module.landing_catalog_validation]
 }
@@ -144,6 +149,7 @@ module "orchestrator_qbc" {
   ingestion_pipelines = { "qbc" = module.qbc[0].pipeline_id }
   schedule            = local.job.common_schedule
   is_common_job       = true
+  permissions         = local.job_permissions
 
   depends_on = [module.qbc]
 }
@@ -166,6 +172,7 @@ module "qbc_fc" {
   tables                         = local.qbc_fc_tables
   pipeline_configuration         = local.qbc_fc_pipeline_configuration
   event_log_to_table             = local.event_log_to_table
+  permissions                    = local.permissions
 
   depends_on = [module.landing_catalog_validation]
 }
@@ -178,6 +185,7 @@ module "orchestrator_qbc_fc" {
   ingestion_pipelines = { "qbc" = module.qbc_fc[0].pipeline_id }
   schedule            = local.job.common_schedule
   is_common_job       = true
+  permissions         = local.job_permissions
 
   depends_on = [module.qbc_fc]
 }
