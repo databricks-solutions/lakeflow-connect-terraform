@@ -181,6 +181,9 @@ locals {
     ]
   }
 
+  # Optional Spark configuration for the gateway pipeline only (i.e not passed to managed ingestion pipelines)
+  gateway_pipeline_configuration = try(local.cfg.gateway_pipeline_configuration, {})
+
   # Permissions are optional; omit from YAML to skip databricks_permissions resource creation. Applied uniformly to all deployed pipelines and jobs.
   permissions = try(local.cfg.permissions, [])
 

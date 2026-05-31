@@ -243,3 +243,17 @@ After the gateway pipeline is created or updated, a validation script polls the 
 
 - `timeout_minutes`: How long to wait for the gateway to reach a running state before failing (minimum 15).
 - `check_interval_seconds`: How frequently to poll the pipeline status (minimum 5).
+
+## Gateway Pipeline Configuration
+
+```yaml
+# Optional
+gateway_pipeline_configuration:
+  spark.databricks.acl.needAdminPermissionToViewLogs: "false"
+```
+
+Optional Spark configuration key-value pairs applied to the **gateway pipeline only**. Not passed to managed ingestion pipelines.
+
+The primary use case is `spark.databricks.acl.needAdminPermissionToViewLogs: "false"`, which allows non-workspace admin users who have `CAN_VIEW` or higher on the pipeline to view its cluster logs. This setting requires at least `CAN_VIEW` to be granted on the pipeline via the [`permissions`](#permissions) block. Without that, non-workspace admin users cannot access the pipeline at all regardless of the log setting.
+
+Any valid Databricks pipeline Spark configuration key can be provided. The block is omitted from the Terraform resource entirely when not specified.

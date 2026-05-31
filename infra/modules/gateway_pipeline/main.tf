@@ -67,6 +67,12 @@ variable "event_log_to_table" {
   default     = true
 }
 
+variable "pipeline_configuration" {
+  description = "Optional Spark configuration key-value pairs applied to the gateway pipeline only. Not passed to ingestion pipelines."
+  type        = map(string)
+  default     = {}
+}
+
 variable "permissions" {
   description = "List of permission grants for this pipeline"
   type = list(object({
@@ -102,6 +108,7 @@ resource "databricks_pipeline" "gateway" {
       }
     }
   }
+  configuration          = length(var.pipeline_configuration) > 0 ? var.pipeline_configuration : null
   allow_duplicate_names  = false
   development            = false
   continuous             = true

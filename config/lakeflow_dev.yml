@@ -68,6 +68,8 @@ gateway_validation:
   timeout_minutes: 30
   check_interval_seconds: 15
 
+gateway_pipeline_configuration:
+  spark.databricks.acl.needAdminPermissionToViewLogs: "false"
 
 event_log:
   to_table: true

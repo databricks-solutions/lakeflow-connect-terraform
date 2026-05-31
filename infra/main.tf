@@ -40,6 +40,7 @@ module "gateway" {
   cluster                 = local.cfg.gateway_pipeline_cluster_config
   cluster_policy_name     = local.cfg.gateway_pipeline_cluster_policy_name
   event_log_to_table      = local.event_log_to_table
+  pipeline_configuration  = local.gateway_pipeline_configuration
   permissions             = local.permissions
   depends_on              = [module.staging]
 }
