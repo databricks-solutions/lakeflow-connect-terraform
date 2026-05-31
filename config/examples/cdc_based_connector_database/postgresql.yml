@@ -100,6 +100,13 @@ gateway_validation:
   timeout_minutes: 30
   check_interval_seconds: 15
 
+# Optional: Spark configuration applied to the gateway pipeline only.
+# Does not apply to managed ingestion pipelines.
+# Note: spark.databricks.acl.needAdminPermissionToViewLogs requires CAN_VIEW or higher
+# on the pipeline — ensure the permissions block is configured accordingly.
+# gateway_pipeline_configuration:
+#   spark.databricks.acl.needAdminPermissionToViewLogs: "false"
+
 # Event log configuration : Control whether pipeline event logs are materialized to Delta tables
 # When enabled, event logs are written to Delta tables in the respective schemas:
 #   - Gateway pipeline: logs to the staging schema (<app>_lf_staging)
